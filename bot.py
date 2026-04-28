@@ -333,13 +333,50 @@ def compute_volume_ratio(intraday: pd.DataFrame, daily: pd.DataFrame) -> float:
 
 
 def detect_breakout(intraday: pd.DataFrame, daily: pd.DataFrame) -> tuple[bool, float]:
-    """Did current price clear the 20-day high?"""
+    """Did current price clear the 20-day high? (Diagnostic only; not scored.)"""
     if intraday.empty or len(daily) < 20:
         return False, 0.0
     recent_high = float(daily["High"].tail(20).max())
     current = float(intraday["Close"].iloc[-1])
     pct_from_high = (current - recent_high) / recent_high * 100
     return current > recent_high, pct_from_high
+
+
+def detect_pullback(intraday: pd.DataFrame, daily: pd.DataFrame) -> tuple[bool, float]:
+    """
+    'Buy the retest' pattern. The 20-day high was set in the last 5 sessions
+    AND current price has come back to within [-3%, 0%] of that high.
+
+    This replaces the raw breakout reward, which the backtest showed was
+    anti-predictive (-2.6pp lift) — the bot was buying the parabola top.
+    """
+    if intraday.empty or len(daily) < 20:
+        return False, 0.0
+    window = daily.tail(20)
+    high_idx = int(np.argmax(window["High"].values))
+    days_since_high = (len(window) - 1) - high_idx
+    recent_high = float(window["High"].iloc[high_idx])
+    current = float(intraday["Close"].iloc[-1])
+    pct_from_high = (current - recent_high) / recent_high * 100
+    is_pullback = days_since_high <= 5 and -3.0 <= pct_from_high <= 0.0
+    return is_pullback, pct_from_high
+
+
+def compute_extension(intraday: pd.DataFrame, daily: pd.DataFrame) -> float:
+    """
+    Percent above the 20-day EMA of close. Positive = stretched above trend.
+
+    The backtest showed alerts firing on parabolic moves (e.g. ATGL VR 26.7x
+    at +14.7% breakout → −13% next day). This metric drives the extension
+    penalty in score_stock so the bot stops chasing those tops.
+    """
+    if intraday.empty or len(daily) < 20:
+        return 0.0
+    ema20 = float(daily["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
+    if ema20 <= 0:
+        return 0.0
+    current = float(intraday["Close"].iloc[-1])
+    return (current - ema20) / ema20 * 100
 
 
 # ============================================================================
@@ -363,11 +400,21 @@ def score_stock(
     symbol: str, intraday: pd.DataFrame, daily: pd.DataFrame
 ) -> StockSignals:
     """
-    Composite microstructure score (0-100). Components:
-      - Volume ratio above 10-day expected (max 30 pts)
-      - RSI in momentum zone 55-75 (max 25 pts)
-      - Trading above session VWAP (15 pts)
-      - Breakout above 20-day high (max 30 pts)
+    Composite microstructure score (0-100). Weights tuned from a 60-day
+    NSE backtest (see backtest.py — 4796 alerts).
+
+    Positive components:
+      - Volume ratio vs 10-day expected (max 40 pts)  ← only +lift signal
+      - Pullback to 20-day high made in last 5 sessions (25 pts)
+      - RSI in momentum zone 60-70 (max 15 pts)       ← was anti-predictive at 25
+      - Above session VWAP (15 pts)
+
+    Penalties:
+      - Price > 20-day EMA × 1.07 (-20 pts), > 1.10 (-40 pts)
+      - RSI > 80 (-15 pts)
+
+    The raw breakout reward was removed — the backtest showed -2.6pp lift,
+    consistent with chasing the parabola top.
     """
     if intraday.empty or daily.empty:
         return StockSignals(symbol, 0.0, 50.0, 1.0, False, False, 0.0, 0, ["no data"])
@@ -378,42 +425,50 @@ def score_stock(
     vwap = compute_session_vwap(intraday)
     above_vwap = price > vwap if vwap > 0 else False
     breakout, pct_from_high = detect_breakout(intraday, daily)
+    is_pullback, _ = detect_pullback(intraday, daily)
+    extension = compute_extension(intraday, daily)
 
     score = 0
     reasons: list[str] = []
 
-    # Volume ratio
+    # Volume ratio — only component with positive lift in backtest
     if vol_ratio >= 3.0:
-        score += 30
+        score += 40
         reasons.append(f"VR {vol_ratio:.1f}x")
     elif vol_ratio >= 2.0:
-        score += 20
+        score += 30
         reasons.append(f"VR {vol_ratio:.1f}x")
     elif vol_ratio >= 1.5:
-        score += 10
+        score += 20
+        reasons.append(f"VR {vol_ratio:.1f}x")
 
-    # RSI in momentum zone
+    # RSI in momentum zone — weight reduced (slightly anti-predictive)
     if 60 <= rsi <= 70:
-        score += 25
-        reasons.append(f"RSI {rsi:.0f}")
-    elif 55 <= rsi < 60 or 70 < rsi <= 75:
         score += 15
         reasons.append(f"RSI {rsi:.0f}")
+    elif 55 <= rsi < 60 or 70 < rsi <= 75:
+        score += 8
+        reasons.append(f"RSI {rsi:.0f}")
     elif rsi > 80:
-        score -= 10  # overbought penalty
+        score -= 15  # overbought penalty (deepened from -10)
 
     # Above session VWAP
     if above_vwap:
         score += 15
         reasons.append("> VWAP")
 
-    # Breakout above 20-day high
-    if breakout:
-        score += 30
-        reasons.append(f"BO +{pct_from_high:.1f}%")
-    elif -2 <= pct_from_high < 0:
-        score += 10
-        reasons.append("near high")
+    # Pullback to recent high — replaces the old breakout reward
+    if is_pullback:
+        score += 25
+        reasons.append(f"pullback {pct_from_high:+.1f}%")
+
+    # Extension penalty — kills the "buying parabola top" pattern
+    if extension > 10:
+        score -= 40
+        reasons.append(f"extended +{extension:.1f}%")
+    elif extension > 7:
+        score -= 20
+        reasons.append(f"extended +{extension:.1f}%")
 
     score = max(0, min(100, score))
 
