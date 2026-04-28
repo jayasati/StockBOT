@@ -25,6 +25,7 @@ import yfinance as yf
 from dotenv import load_dotenv
 
 import filings
+import suppression
 
 load_dotenv()
 logging.basicConfig(
@@ -123,16 +124,6 @@ def init_db() -> None:
         conn.executescript(SCHEMA)
 
 
-def was_alerted_recently(symbol: str, minutes: int) -> bool:
-    cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat()
-    with sqlite3.connect(DB_PATH) as conn:
-        row = conn.execute(
-            "SELECT 1 FROM alerts_sent WHERE symbol = ? AND sent_at > ? LIMIT 1",
-            (symbol, cutoff),
-        ).fetchone()
-    return row is not None
-
-
 def record_alert(symbol: str, score: int, reasons: str, price: float) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
@@ -221,6 +212,22 @@ def refresh_daily_cache_if_stale() -> None:
     missing = set(WATCHLIST) - set(_daily_cache.keys())
     if missing:
         log.warning("No daily data for: %s", ", ".join(sorted(missing)))
+
+
+_asm_refresh_date: str = ""
+
+
+async def refresh_asm_gsm_if_stale() -> None:
+    """Re-pull NSE ASM/GSM lists once per calendar day (IST)."""
+    global _asm_refresh_date
+    today_str = datetime.now(IST).date().isoformat()
+    if _asm_refresh_date == today_str:
+        return
+    try:
+        await suppression.refresh_asm_gsm()
+        _asm_refresh_date = today_str
+    except Exception as e:
+        log.exception("ASM/GSM refresh failed: %s", e)
 
 
 # ============================================================================
@@ -544,6 +551,7 @@ def seconds_until_market_open() -> int:
 
 async def scan_once(telegram: Telegram) -> None:
     refresh_daily_cache_if_stale()
+    await refresh_asm_gsm_if_stale()
 
     new_filings = await filings.poll_filings()
     for symbol, classification, title, _link in new_filings:
@@ -577,7 +585,11 @@ async def scan_once(telegram: Telegram) -> None:
         log.debug("%s: score=%d %s", symbol, signals.score, signals.reasons)
 
         if signals.score >= settings.composite_threshold:
-            if was_alerted_recently(symbol, settings.cooldown_minutes):
+            blocked, reason = suppression.is_suppressed(
+                symbol, settings.cooldown_minutes
+            )
+            if blocked:
+                log.info("Suppressed %s: %s", symbol, reason)
                 continue
             candidates.append(signals)
 
@@ -603,6 +615,8 @@ async def scan_once(telegram: Telegram) -> None:
 async def main() -> None:
     init_db()
     filings.init_db()
+    suppression.init_db()
+    await refresh_asm_gsm_if_stale()
     telegram = Telegram(settings.telegram_bot_token, settings.telegram_chat_id)
 
     await telegram.send(
