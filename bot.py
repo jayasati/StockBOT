@@ -9,6 +9,7 @@ Run: python bot.py
 """
 
 import asyncio
+import csv
 import logging
 import os
 import sqlite3
@@ -22,6 +23,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 from dotenv import load_dotenv
+
+import filings
 
 load_dotenv()
 logging.basicConfig(
@@ -69,81 +72,33 @@ settings = Settings(
 
 
 # ============================================================================
-# Watchlist — Indian large caps + mid caps (~130 stocks)
-# Edit freely. Use NSE symbols with .NS suffix.
-# If a symbol returns no data, the bot logs it on first scan — remove or fix.
+# Watchlist — loaded from NIFTY 500 CSV at startup
+# ============================================================================
+# To change the universe, replace ind_nifty500list.csv (download from:
+# https://archives.nseindia.com/content/indices/ind_nifty500list.csv).
+# Only EQ-series symbols are loaded; .NS suffix is appended for yfinance.
 # ============================================================================
 
-WATCHLIST = [
-    # ---- Banking & Financial Services ----
-    "HDFCBANK.NS", "ICICIBANK.NS", "KOTAKBANK.NS", "AXISBANK.NS", "SBIN.NS",
-    "INDUSINDBK.NS", "BAJFINANCE.NS", "BAJAJFINSV.NS", "BAJAJHLDNG.NS",
-    "IDFCFIRSTB.NS", "FEDERALBNK.NS", "BANKBARODA.NS", "PNB.NS", "AUBANK.NS",
-    "BANDHANBNK.NS", "CHOLAFIN.NS", "MUTHOOTFIN.NS", "MANAPPURAM.NS",
-    "HDFCAMC.NS", "HDFCLIFE.NS", "SBILIFE.NS", "ICICIPRULI.NS", "ICICIGI.NS",
-    "LICI.NS", "POLICYBZR.NS", "PAYTM.NS", "PFC.NS", "RECLTD.NS",
-    "IRFC.NS", "SHRIRAMFIN.NS", "M&MFIN.NS",
+WATCHLIST_CSV = Path("ind_nifty500list.csv")
 
-    # ---- IT Services ----
-    "TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS", "TECHM.NS", "LTIM.NS",
-    "MPHASIS.NS", "COFORGE.NS", "PERSISTENT.NS", "OFSS.NS", "KPITTECH.NS",
-    "TANLA.NS",
 
-    # ---- Pharma & Healthcare ----
-    "SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS", "LUPIN.NS",
-    "AUROPHARMA.NS", "BIOCON.NS", "ALKEM.NS", "TORNTPHARM.NS", "ZYDUSLIFE.NS",
-    "GLENMARK.NS", "LAURUSLABS.NS", "APOLLOHOSP.NS", "MAXHEALTH.NS",
-    "FORTIS.NS",
+def _load_watchlist() -> list[str]:
+    if not WATCHLIST_CSV.exists():
+        log.error(
+            "Watchlist CSV not found at %s — bot has nothing to scan",
+            WATCHLIST_CSV,
+        )
+        return []
+    symbols: list[str] = []
+    with WATCHLIST_CSV.open(encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            sym = (row.get("Symbol") or "").strip()
+            if sym:
+                symbols.append(f"{sym}.NS")
+    return symbols
 
-    # ---- Auto & Auto Ancillaries ----
-    "MARUTI.NS", "M&M.NS", "TMPV.NS", "TMCV.NS", "BAJAJ-AUTO.NS",
-    "EICHERMOT.NS",
-    "HEROMOTOCO.NS", "TVSMOTOR.NS", "ASHOKLEY.NS", "BHARATFORG.NS",
-    "BOSCHLTD.NS", "MOTHERSON.NS", "MRF.NS", "BALKRISIND.NS", "EXIDEIND.NS",
-    "ESCORTS.NS",
 
-    # ---- Energy, Oil & Gas ----
-    "RELIANCE.NS", "ONGC.NS", "IOC.NS", "BPCL.NS", "HINDPETRO.NS", "GAIL.NS",
-    "COALINDIA.NS", "NTPC.NS", "POWERGRID.NS", "TATAPOWER.NS",
-    "ADANIPOWER.NS", "ADANIGREEN.NS", "ATGL.NS", "JSWENERGY.NS",
-    "SUZLON.NS", "IEX.NS", "IGL.NS", "GUJGASLTD.NS", "PETRONET.NS", "OIL.NS",
-
-    # ---- Metals & Mining ----
-    "TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "JINDALSTEL.NS", "VEDL.NS",
-    "NMDC.NS", "SAIL.NS", "HINDZINC.NS", "HINDCOPPER.NS", "APLAPOLLO.NS",
-
-    # ---- FMCG & Consumer ----
-    "HINDUNILVR.NS", "ITC.NS", "NESTLEIND.NS", "BRITANNIA.NS", "DABUR.NS",
-    "GODREJCP.NS", "COLPAL.NS", "MARICO.NS", "TATACONSUM.NS", "VBL.NS",
-    "UNITDSPR.NS", "TITAN.NS", "TRENT.NS", "DMART.NS", "NYKAA.NS",
-    "ETERNAL.NS",
-
-    # ---- Cement ----
-    "ULTRACEMCO.NS", "GRASIM.NS", "AMBUJACEM.NS", "ACC.NS", "SHREECEM.NS",
-    "DALBHARAT.NS",
-
-    # ---- Capital Goods & Engineering ----
-    "LT.NS", "SIEMENS.NS", "ABB.NS", "HAVELLS.NS", "CUMMINSIND.NS",
-    "BEL.NS", "HAL.NS", "BHEL.NS", "VOLTAS.NS", "DIXON.NS", "POLYCAB.NS",
-    "SOLARINDS.NS", "AIAENG.NS",
-
-    # ---- Chemicals & Fertilisers ----
-    "TATACHEM.NS", "SRF.NS", "PIDILITIND.NS", "UPL.NS", "DEEPAKNTR.NS",
-    "AARTIIND.NS", "PIIND.NS", "NAVINFLUOR.NS", "FINEORG.NS",
-
-    # ---- Construction & Realty ----
-    "DLF.NS", "GODREJPROP.NS", "OBEROIRLTY.NS", "PRESTIGE.NS",
-    "PHOENIXLTD.NS",
-
-    # ---- Telecom ----
-    "BHARTIARTL.NS",
-
-    # ---- Paint ----
-    "ASIANPAINT.NS", "BERGEPAINT.NS",
-
-    # ---- Logistics & Ports ----
-    "ADANIPORTS.NS", "ADANIENT.NS", "CONCOR.NS", "IRCTC.NS",
-]
+WATCHLIST = _load_watchlist()
 
 
 # ============================================================================
@@ -197,20 +152,25 @@ _daily_cache: dict[str, pd.DataFrame] = {}
 _daily_cache_date: str = ""
 
 
-def fetch_intraday(symbols: list[str]) -> dict[str, pd.DataFrame]:
-    """Fetch 5-day, 5-minute OHLCV for all symbols in one batch call."""
+# Chunk size for yfinance batch calls. At 500-symbol universes Yahoo
+# starts throttling single batches; ~100 has been the empirical sweet
+# spot between throughput and being blocked.
+YF_CHUNK_SIZE = 100
+
+
+def _yf_download(symbols: list[str], period: str, interval: str) -> dict[str, pd.DataFrame]:
     try:
         df = yf.download(
             tickers=symbols,
-            period="5d",
-            interval="5m",
+            period=period,
+            interval=interval,
             group_by="ticker",
             progress=False,
             auto_adjust=False,
             threads=True,
         )
     except Exception as e:
-        log.error("yfinance intraday fetch failed: %s", e)
+        log.error("yfinance %s/%s fetch failed: %s", period, interval, e)
         return {}
 
     result: dict[str, pd.DataFrame] = {}
@@ -223,34 +183,29 @@ def fetch_intraday(symbols: list[str]) -> dict[str, pd.DataFrame]:
         except (KeyError, AttributeError):
             continue
     return result
+
+
+def _yf_download_chunked(
+    symbols: list[str], period: str, interval: str
+) -> dict[str, pd.DataFrame]:
+    if len(symbols) <= YF_CHUNK_SIZE:
+        return _yf_download(symbols, period, interval)
+    result: dict[str, pd.DataFrame] = {}
+    for i in range(0, len(symbols), YF_CHUNK_SIZE):
+        result.update(
+            _yf_download(symbols[i : i + YF_CHUNK_SIZE], period, interval)
+        )
+    return result
+
+
+def fetch_intraday(symbols: list[str]) -> dict[str, pd.DataFrame]:
+    """Fetch 5-day, 5-minute OHLCV. Chunked at YF_CHUNK_SIZE for scale."""
+    return _yf_download_chunked(symbols, period="5d", interval="5m")
 
 
 def fetch_daily_batch(symbols: list[str], days: int = 60) -> dict[str, pd.DataFrame]:
-    """Batch-fetch daily history for all symbols in one yfinance call."""
-    try:
-        df = yf.download(
-            tickers=symbols,
-            period=f"{days}d",
-            interval="1d",
-            group_by="ticker",
-            progress=False,
-            auto_adjust=False,
-            threads=True,
-        )
-    except Exception as e:
-        log.error("yfinance daily batch fetch failed: %s", e)
-        return {}
-
-    result: dict[str, pd.DataFrame] = {}
-    for sym in symbols:
-        try:
-            sub = df[sym] if len(symbols) > 1 else df
-            sub = sub.dropna()
-            if not sub.empty:
-                result[sym] = sub
-        except (KeyError, AttributeError):
-            continue
-    return result
+    """Fetch daily history. Chunked at YF_CHUNK_SIZE for scale."""
+    return _yf_download_chunked(symbols, period=f"{days}d", interval="1d")
 
 
 def refresh_daily_cache_if_stale() -> None:
@@ -394,6 +349,7 @@ class StockSignals:
     pct_from_high: float
     score: int
     reasons: list[str] = field(default_factory=list)
+    filing_title: str | None = None
 
 
 def score_stock(
@@ -546,11 +502,13 @@ def format_alert(s: StockSignals) -> str:
         f"{badge} <b>{sym}</b>  ₹{s.price:,.2f}",
         f"<b>Score: {s.score}/100</b>",
         f"  • {' · '.join(s.reasons) if s.reasons else 'no signals'}",
-        (
-            f"<a href='https://www.tradingview.com/symbols/NSE-{sym}/'>Chart</a>"
-            f" · <a href='https://groww.in/stocks/{sym.lower()}'>Groww</a>"
-        ),
     ]
+    if s.filing_title:
+        lines.append(f"  📰 {s.filing_title}")
+    lines.append(
+        f"<a href='https://www.tradingview.com/symbols/NSE-{sym}/'>Chart</a>"
+        f" · <a href='https://groww.in/stocks/{sym.lower()}'>Groww</a>"
+    )
     return "\n".join(lines)
 
 
@@ -587,6 +545,11 @@ def seconds_until_market_open() -> int:
 async def scan_once(telegram: Telegram) -> None:
     refresh_daily_cache_if_stale()
 
+    new_filings = await filings.poll_filings()
+    for symbol, classification, title, _link in new_filings:
+        log.info("Filing [%s] %s: %s", classification, symbol, title)
+    fundamentals = filings.recent_high_priority(60)
+
     log.info("Scanning %d symbols...", len(WATCHLIST))
     intraday_data = fetch_intraday(WATCHLIST)
     if not intraday_data:
@@ -602,6 +565,15 @@ async def scan_once(telegram: Telegram) -> None:
         if daily.empty:
             continue
         signals = score_stock(symbol, intraday, daily)
+
+        # Fundamental catalyst bonus: binary_high BSE filing in last 60 min.
+        # +30 reflects that an earnings beat / order win / acquisition tends
+        # to drive several ATRs of move, dwarfing microstructure signals.
+        if symbol in fundamentals:
+            signals.score = min(100, signals.score + 30)
+            signals.filing_title = fundamentals[symbol]
+            signals.reasons.append("📰 filing")
+
         log.debug("%s: score=%d %s", symbol, signals.score, signals.reasons)
 
         if signals.score >= settings.composite_threshold:
@@ -630,6 +602,7 @@ async def scan_once(telegram: Telegram) -> None:
 
 async def main() -> None:
     init_db()
+    filings.init_db()
     telegram = Telegram(settings.telegram_bot_token, settings.telegram_chat_id)
 
     await telegram.send(
