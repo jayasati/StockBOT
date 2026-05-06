@@ -42,11 +42,9 @@ from backtest import (
     CACHE_DIR,
     DAILY_CACHE,
     WIN_THRESHOLD_PCT,
-    _load_parquet,
-    _normalize_yf_batch,
-    _save_parquet,
     compute_win_rate,
 )
+from data.yf_fetch import fetch_daily as _fetch_daily
 
 # Line-buffered stdout so progress shows up immediately in PowerShell.
 try:
@@ -124,23 +122,12 @@ def fetch_nifty(period_days: int = 186, use_cache: bool = True) -> pd.DataFrame:
 def load_or_fetch_daily(
     symbols: list[str], period_days: int = 186, use_cache: bool = True,
 ) -> dict[str, pd.DataFrame]:
-    cache_path = _daily_cache_path(period_days)
-    if use_cache and cache_path.exists():
-        cached = _load_parquet(cache_path)
-        out = {s: cached[s] for s in symbols if s in cached}
-        if out:
-            log.info("Loaded daily cache (%d days): %d/%d symbols",
-                     period_days, len(out), len(symbols))
-            return out
-    log.info("Fetching %d days of daily data for %d symbols...",
-             period_days, len(symbols))
-    df = yf.download(
-        tickers=symbols, period=f"{period_days}d", interval="1d",
-        group_by="ticker", progress=False, auto_adjust=False, threads=True,
+    return _fetch_daily(
+        symbols,
+        period_days=period_days,
+        cache_path=_daily_cache_path(period_days),
+        refresh=not use_cache,
     )
-    data = _normalize_yf_batch(df, symbols, localize_ist=False)
-    _save_parquet(data, cache_path)
-    return data
 
 
 # ============================================================================
@@ -188,14 +175,22 @@ def evaluate_swing(
     nifty: pd.DataFrame,
     apply_regime: bool,
     max_extension_pct: Optional[float] = None,
+    as_of_date: Optional[pd.Timestamp] = None,
 ) -> list[SwingAlert]:
+    """Apply the swing signal across ``daily_data``.
+
+    ``as_of_date=None`` (default): replay every qualifying day in the history
+        (backtest mode). Each alert carries forward exits at +1/+3/+5 days.
+    ``as_of_date=<Timestamp>``: evaluate only that day (alert mode). Forward
+        exits and entry price are placeholders (the +1 open isn't known yet);
+        callers should consume only the signal-bar fields."""
     breadth_series = compute_breadth_series(daily_data)
     nifty_change = nifty["Close"].pct_change() * 100
 
     alerts: list[SwingAlert] = []
 
     for sym, df in daily_data.items():
-        if len(df) < EMA_PERIOD + max(HORIZONS) + 1:
+        if len(df) < EMA_PERIOD + 1:
             continue
 
         ema = df["Close"].ewm(span=EMA_PERIOD, adjust=False).mean()
@@ -203,7 +198,21 @@ def evaluate_swing(
         rng = (df["High"] - df["Low"]).replace(0, np.nan)
         range_pos = (df["Close"] - df["Low"]) / rng
 
-        for i in range(EMA_PERIOD, len(df) - max(HORIZONS)):
+        if as_of_date is not None:
+            if as_of_date not in df.index:
+                continue
+            target_i = df.index.get_loc(as_of_date)
+            if not isinstance(target_i, (int, np.integer)):
+                continue
+            if target_i < EMA_PERIOD:
+                continue
+            i_range = [int(target_i)]
+        else:
+            if len(df) < EMA_PERIOD + max(HORIZONS) + 1:
+                continue
+            i_range = range(EMA_PERIOD, len(df) - max(HORIZONS))
+
+        for i in i_range:
             day = df.index[i]
             close = float(df["Close"].iloc[i])
             vol = float(df["Volume"].iloc[i])
@@ -237,8 +246,13 @@ def evaluate_swing(
                 continue
 
             entry_idx = i + 1
-            entry_date = df.index[entry_idx]
-            entry_open = float(df["Open"].iloc[entry_idx])
+            if entry_idx < len(df):
+                entry_date = df.index[entry_idx]
+                entry_open = float(df["Open"].iloc[entry_idx])
+            else:
+                # Alert-mode tail: tomorrow's open isn't in the data yet.
+                entry_date = day
+                entry_open = close
 
             def _exit(h: int) -> Optional[float]:
                 idx = i + h

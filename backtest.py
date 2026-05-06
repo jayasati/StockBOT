@@ -22,7 +22,7 @@ import logging
 import sys
 import unittest
 from dataclasses import asdict, dataclass
-from datetime import time, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -32,6 +32,13 @@ import pandas as pd
 import yfinance as yf
 
 import bot
+import features
+from data.yf_fetch import (
+    fetch_daily as _yf_fetch_daily,
+    load_parquet as _load_parquet,
+    normalize_yf_batch as _normalize_yf_batch,
+    save_parquet as _save_parquet,
+)
 
 # Line-buffer stdout so progress lines appear immediately in PowerShell.
 try:
@@ -61,87 +68,8 @@ WARMUP_BARS = 20
 
 
 # ============================================================================
-# Backtest-aware override of compute_volume_ratio
-#
-# bot.compute_volume_ratio uses datetime.now(IST).time() to compute the
-# session-elapsed fraction. That's wrong for replay — we need the timestamp
-# of the bar being scored, not wall-clock time. We monkey-patch the bot
-# module so score_stock picks up this version.
-# ============================================================================
-
-def _bt_volume_ratio(intraday: pd.DataFrame, daily: pd.DataFrame) -> float:
-    if intraday.empty or daily.empty or len(daily) < 10:
-        return 1.0
-    last_ts = intraday.index[-1]
-    today = last_ts.date()
-    today_data = intraday[intraday.index.date == today]
-    if today_data.empty:
-        return 1.0
-    today_vol = float(today_data["Volume"].sum())
-    avg_daily_vol = float(daily["Volume"].tail(10).mean())
-    if avg_daily_vol == 0:
-        return 1.0
-    last_t = last_ts.time()
-    if last_t < time(9, 15):
-        fraction = 0.01
-    elif last_t > time(15, 30):
-        fraction = 1.0
-    else:
-        elapsed = (last_t.hour - 9) * 60 + last_t.minute - 15
-        fraction = max(0.05, elapsed / 375)
-    expected = avg_daily_vol * fraction
-    return float(today_vol / expected) if expected > 0 else 1.0
-
-
-# ============================================================================
 # Data loading: yfinance + parquet cache
 # ============================================================================
-
-def _normalize_yf_batch(
-    df: pd.DataFrame, symbols: list[str], localize_ist: bool
-) -> dict[str, pd.DataFrame]:
-    out: dict[str, pd.DataFrame] = {}
-    for sym in symbols:
-        try:
-            sub = df[sym].copy() if isinstance(df.columns, pd.MultiIndex) else df.copy()
-        except KeyError:
-            continue
-        sub = sub.dropna(how="all")
-        if sub.empty:
-            continue
-        if localize_ist:
-            if sub.index.tz is None:
-                sub.index = sub.index.tz_localize("UTC").tz_convert(IST)
-            else:
-                sub.index = sub.index.tz_convert(IST)
-        sub.index.name = "timestamp"
-        out[sym] = sub
-    return out
-
-
-def _save_parquet(data: dict[str, pd.DataFrame], path: Path) -> None:
-    if not data:
-        return
-    pieces = []
-    for sym, df in data.items():
-        d = df.reset_index()
-        d["symbol"] = sym
-        pieces.append(d)
-    combined = pd.concat(pieces, ignore_index=True)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    combined.to_parquet(path, engine="pyarrow", index=False)
-
-
-def _load_parquet(path: Path) -> dict[str, pd.DataFrame]:
-    if not path.exists():
-        return {}
-    combined = pd.read_parquet(path, engine="pyarrow")
-    out: dict[str, pd.DataFrame] = {}
-    for sym, group in combined.groupby("symbol"):
-        df = group.drop(columns=["symbol"]).set_index("timestamp").sort_index()
-        out[sym] = df
-    return out
-
 
 def fetch_intraday_5m(
     symbols: list[str], days: int = 60, use_cache: bool = True
@@ -166,22 +94,12 @@ def fetch_intraday_5m(
 def fetch_daily(
     symbols: list[str], months: int = 6, use_cache: bool = True
 ) -> dict[str, pd.DataFrame]:
-    if use_cache and DAILY_CACHE.exists():
-        log.info("Loading daily data from cache: %s", DAILY_CACHE)
-        cached = _load_parquet(DAILY_CACHE)
-        if cached:
-            log.info("  %d symbols loaded from cache", len(cached))
-            return cached
-    days = months * 31
-    log.info("Fetching %d days of daily data for %d symbols...", days, len(symbols))
-    df = yf.download(
-        tickers=symbols, period=f"{days}d", interval="1d",
-        group_by="ticker", progress=False, auto_adjust=False, threads=True,
+    return _yf_fetch_daily(
+        symbols,
+        period_days=months * 31,
+        cache_path=DAILY_CACHE,
+        refresh=not use_cache,
     )
-    data = _normalize_yf_batch(df, symbols, localize_ist=False)
-    log.info("Got daily data for %d/%d symbols", len(data), len(symbols))
-    _save_parquet(data, DAILY_CACHE)
-    return data
 
 
 # ============================================================================
@@ -248,18 +166,10 @@ def _can_skip_bar(
     pct_from_high = (current - recent_high) / recent_high * 100
     in_pullback_zone = -3.0 <= pct_from_high <= 0.0
 
-    t_date = t.date()
-    today_bars = intraday.iloc[max(0, i - 100): i + 1]
-    today_bars = today_bars[today_bars.index.date == t_date]
-    if today_bars.empty:
-        return True
-    today_vol = float(today_bars["Volume"].sum())
-    avg_vol = float(daily_slice["Volume"].tail(10).mean())
-    if avg_vol == 0:
-        return True
-    elapsed = (t.hour - 9) * 60 + t.minute - 15
-    fraction = max(0.05, elapsed / 375) if elapsed >= 0 else 0.05
-    quick_vr = today_vol / (avg_vol * fraction)
+    # Pre-filter uses the same volume-ratio math as score_stock.
+    quick_vr = features.volume_ratio(
+        intraday.iloc[max(0, i - 100): i + 1], daily_slice, as_of=t
+    )
     high_vr = quick_vr >= 1.5
 
     if threshold >= 60:
@@ -322,7 +232,7 @@ def replay(
             slice_start = max(0, i - LOOKBACK_BARS)
             intraday_slice = intraday.iloc[slice_start: i + 1]
 
-            signals = bot.score_stock(sym, intraday_slice, daily_slice)
+            signals = bot.score_stock(sym, intraday_slice, daily_slice, as_of=t)
             if signals.score < threshold:
                 continue
             if last_alert is not None and (t - last_alert) < cooldown_td:
@@ -646,12 +556,6 @@ def main() -> None:
 
     if args.tests:
         unittest.main(argv=[sys.argv[0], "-v"], exit=True)
-
-    # Make replay deterministic — score_stock will call our patched version
-    # instead of the wall-clock-dependent one. We patch on bot.indicators
-    # because score_stock now resolves compute_volume_ratio via that module
-    # at call time (post-modularisation).
-    bot.indicators.compute_volume_ratio = _bt_volume_ratio
 
     symbols = bot.WATCHLIST[: args.symbols] if args.symbols else bot.WATCHLIST
 

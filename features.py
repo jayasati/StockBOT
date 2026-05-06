@@ -21,14 +21,14 @@ Conventions
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from bot.schedule import SESSION_CLOSE, SESSION_OPEN  # re-exported for callers
+
 IST = ZoneInfo("Asia/Kolkata")
-SESSION_OPEN = time(9, 15)
-SESSION_CLOSE = time(15, 30)
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +194,53 @@ def relative_strength(
     sym_ret = sym.iloc[-1] / sym.iloc[-lookback - 1] - 1.0
     nif_ret = nif.iloc[-1] / nif.iloc[-lookback - 1] - 1.0
     return float(sym_ret - nif_ret)
+
+
+def volume_ratio(
+    intraday: pd.DataFrame,
+    daily: pd.DataFrame,
+    as_of: pd.Timestamp | datetime | None = None,
+) -> float:
+    """Today's session volume divided by what we'd expect at this elapsed
+    fraction of the session, using a 10-day average daily volume.
+
+    ``as_of=None`` → uses ``datetime.now(IST)`` (live path).
+    ``as_of=<Timestamp>`` → uses that timestamp's date+time (backtest replay).
+
+    Accepts either yfinance-style uppercase OHLCV columns or lowercase.
+    Above 2.0 = unusual activity. Above 3.0 = strong institutional footprint.
+    """
+    if intraday.empty or daily.empty or len(daily) < 10:
+        return 1.0
+
+    intra_vol_col = "Volume" if "Volume" in intraday.columns else "volume"
+    daily_vol_col = "Volume" if "Volume" in daily.columns else "volume"
+
+    if as_of is None:
+        as_of = datetime.now(IST)
+
+    today_date = as_of.date()
+    today_data = intraday[intraday.index.date == today_date]
+    if today_data.empty:
+        return 1.0
+    today_vol = float(today_data[intra_vol_col].sum())
+
+    avg_daily_vol = float(daily[daily_vol_col].tail(10).mean())
+    if avg_daily_vol == 0:
+        return 1.0
+
+    # Fraction of NSE session elapsed (09:15 to 15:30 = 375 minutes)
+    t = as_of.time()
+    if t < SESSION_OPEN:
+        fraction = 0.01
+    elif t > SESSION_CLOSE:
+        fraction = 1.0
+    else:
+        elapsed = (t.hour - 9) * 60 + t.minute - 15
+        fraction = max(0.05, elapsed / 375)
+
+    expected = avg_daily_vol * fraction
+    return float(today_vol / expected) if expected > 0 else 1.0
 
 
 def is_above_vwap(bar, vwap_value: float) -> bool:

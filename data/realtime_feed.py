@@ -32,18 +32,22 @@ import sqlite3
 import threading
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from bot.schedule import (  # re-exported for legacy callers
+    SESSION_LAST_BAR_OPEN,
+    SESSION_OPEN,
+    in_session,
+)
+
 log = logging.getLogger("alertbot.realtime_feed")
 
 IST = ZoneInfo("Asia/Kolkata")
-SESSION_OPEN = time(9, 15)
-SESSION_LAST_BAR_OPEN = time(15, 25)  # last valid 5-min slot starts at 15:25
 
 DEFAULT_DB_PATH = Path("alerts.db")
 MAX_BARS_PER_SYMBOL = 200
@@ -87,10 +91,7 @@ def _floor_to_5m(ts_ist: pd.Timestamp) -> pd.Timestamp:
 
 
 def _is_in_session(slot_ts: pd.Timestamp) -> bool:
-    t = slot_ts.time()
-    if t < SESSION_OPEN or t > SESSION_LAST_BAR_OPEN:
-        return False
-    return slot_ts.weekday() < 5
+    return in_session(slot_ts, mode="bar_slot")
 
 
 def _epoch_to_ist(epoch_seconds: float) -> pd.Timestamp:

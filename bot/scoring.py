@@ -1,11 +1,7 @@
 """Composite microstructure scoring.
 
-Note on the indicators import: we deliberately import the *module* and call
-``indicators.compute_volume_ratio(...)`` instead of pulling the function name
-into this namespace. The backtest replaces compute_volume_ratio at runtime
-(see backtest.py — the wall-clock-based version is wrong for replay), and
-attribute access on the module picks up the substitution at call time.
-"""
+The backtest replay path passes ``as_of=<bar timestamp>`` so the volume-ratio
+fraction is anchored to the bar being scored, not wall-clock now."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -30,7 +26,11 @@ class StockSignals:
 
 
 def score_stock(
-    symbol: str, intraday: pd.DataFrame, daily: pd.DataFrame
+    symbol: str,
+    intraday: pd.DataFrame,
+    daily: pd.DataFrame,
+    *,
+    as_of: pd.Timestamp | None = None,
 ) -> StockSignals:
     """
     Composite microstructure score (0-100). Weights tuned from a 60-day
@@ -56,7 +56,7 @@ def score_stock(
 
     rsi = indicators.compute_rsi(intraday["Close"])
 
-    vol_ratio = indicators.compute_volume_ratio(intraday, daily)
+    vol_ratio = indicators.compute_volume_ratio(intraday, daily, as_of=as_of)
 
     vwap = indicators.compute_session_vwap(intraday)
 

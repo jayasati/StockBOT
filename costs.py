@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from datetime import datetime, time
 
+from bot.schedule import SESSION_CLOSE, SESSION_OPEN
+
 # ---------------------------------------------------------------------------
 # Statutory / broker rates (§3.5)
 # ---------------------------------------------------------------------------
@@ -33,8 +35,6 @@ LARGECAP_SLIPPAGE_BPS = 3
 MIDCAP_SLIPPAGE_BPS = 8
 EDGE_OF_DAY_PENALTY_BPS = 5     # +5 bps in first / last 15 min
 
-SESSION_OPEN = time(9, 15)
-SESSION_CLOSE = time(15, 30)
 LIQUID_OPEN = time(9, 30)       # first-15-min penalty applies before this
 LIQUID_CLOSE = time(15, 15)     # last-15-min penalty applies from this
 

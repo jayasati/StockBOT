@@ -36,23 +36,7 @@ DB_PATH = Path("alerts.db")
 IST = ZoneInfo("Asia/Kolkata")
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS filings_seen (
-    filing_id      TEXT PRIMARY KEY,
-    symbol         TEXT NOT NULL,
-    title          TEXT NOT NULL,
-    classification TEXT NOT NULL,
-    seen_at        TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_filings_sym_class_time
-    ON filings_seen(symbol, classification, seen_at);
-"""
-
-
-def init_db() -> None:
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.executescript(SCHEMA)
-
+# Schema + init_db live in bot/db.py — this module only reads/writes rows.
 
 # ============================================================================
 # BSE company name → NSE ticker mapping (built from NIFTY 500 CSV)

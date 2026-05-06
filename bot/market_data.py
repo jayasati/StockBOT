@@ -141,8 +141,10 @@ def fetch_intraday(symbols: list[str]) -> dict[str, pd.DataFrame]:
 
 
 def fetch_daily_batch(symbols: list[str], days: int = 60) -> dict[str, pd.DataFrame]:
-    """Fetch daily history. Chunked at YF_CHUNK_SIZE for scale."""
-    return _yf_download_chunked(symbols, period=f"{days}d", interval="1d")
+    """Fetch daily history. Thin wrapper over ``data.yf_fetch.fetch_daily``;
+    live path so caching is disabled."""
+    from data.yf_fetch import fetch_daily as _fetch_daily
+    return _fetch_daily(symbols, period_days=days, cache_path=None)
 
 
 def refresh_daily_cache_if_stale() -> None:

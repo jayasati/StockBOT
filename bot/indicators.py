@@ -10,7 +10,17 @@ from datetime import datetime, time
 import numpy as np
 import pandas as pd
 
+import features
+
 from .config import IST
+
+
+def _to_lower_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Rename yfinance-style uppercase OHLCV to features.py's lowercase."""
+    return df.rename(columns={
+        "Open": "open", "High": "high", "Low": "low",
+        "Close": "close", "Volume": "volume",
+    })
 
 
 def compute_rsi(close: pd.Series, period: int = 14) -> float:
@@ -27,50 +37,32 @@ def compute_rsi(close: pd.Series, period: int = 14) -> float:
 
 
 def compute_session_vwap(df: pd.DataFrame) -> float:
-    """VWAP for the current session only (today's bars)."""
+    """Cumulative session VWAP at the latest bar (legacy scalar shape).
+
+    Thin wrapper over ``features.session_vwap``. The legacy callers in this
+    package pass yfinance-style uppercase OHLCV; ``features`` is the
+    canonical lowercase implementation.
+    """
     if df.empty:
         return 0.0
-    today = df.index[-1].date()
-    today_df = df[df.index.date == today]
-    if today_df.empty:
+    bars = _to_lower_columns(df)
+    session_date = bars.index[-1].date()
+    vwap = features.session_vwap(bars, session_date)
+    if vwap.empty:
         return 0.0
-    typical = (today_df["High"] + today_df["Low"] + today_df["Close"]) / 3
-    vwap = (typical * today_df["Volume"]).cumsum() / today_df["Volume"].cumsum()
     return float(vwap.iloc[-1])
 
 
-def compute_volume_ratio(intraday: pd.DataFrame, daily: pd.DataFrame) -> float:
-    """
-    Today's volume so far divided by what we'd expect at this point in the
-    session, based on the 10-day average daily volume.
+def compute_volume_ratio(
+    intraday: pd.DataFrame,
+    daily: pd.DataFrame,
+    as_of=None,
+) -> float:
+    """Volume ratio. Thin wrapper over ``features.volume_ratio``.
 
-    Above 2.0 = unusual activity. Above 3.0 = strong institutional footprint.
-    """
-    if intraday.empty or daily.empty or len(daily) < 10:
-        return 1.0
-
-    today = intraday.index[-1].date()
-    today_data = intraday[intraday.index.date == today]
-    if today_data.empty:
-        return 1.0
-    today_vol = float(today_data["Volume"].sum())
-
-    avg_daily_vol = float(daily["Volume"].tail(10).mean())
-    if avg_daily_vol == 0:
-        return 1.0
-
-    # Fraction of NSE session elapsed (9:15 to 15:30 = 375 minutes)
-    now_t = datetime.now(IST).time()
-    if now_t < time(9, 15):
-        fraction = 0.01
-    elif now_t > time(15, 30):
-        fraction = 1.0
-    else:
-        elapsed = (now_t.hour - 9) * 60 + now_t.minute - 15
-        fraction = max(0.05, elapsed / 375)
-
-    expected = avg_daily_vol * fraction
-    return float(today_vol / expected) if expected > 0 else 1.0
+    Pass ``as_of=<Timestamp>`` from the backtest replay; live callers leave it
+    None to use wall-clock now."""
+    return features.volume_ratio(intraday, daily, as_of=as_of)
 
 
 def detect_breakout(intraday: pd.DataFrame, daily: pd.DataFrame) -> tuple[bool, float]:

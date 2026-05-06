@@ -28,10 +28,10 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-import yfinance as yf
 from dotenv import load_dotenv
 
 import bot
+from data.yf_fetch import fetch_daily as _fetch_daily
 from swing_backtest import (
     BREADTH_THRESHOLD_PCT,
     EMA_PERIOD,
@@ -40,6 +40,8 @@ from swing_backtest import (
     NIFTY_UP_PCT,
     RANGE_POSITION_THRESHOLD,
     VOLUME_MULTIPLE,
+    compute_breadth_series,
+    evaluate_swing,
 )
 
 load_dotenv()
@@ -62,49 +64,23 @@ HISTORY_DAYS = 60   # 60 calendar days ≈ 40 trading days; enough for 20-EMA
 # ============================================================================
 
 def fetch_daily(symbols: list[str]) -> dict[str, pd.DataFrame]:
-    """Pull daily bars for the watchlist + NIFTY in one yfinance call."""
-    tickers = symbols + [NIFTY_TICKER]
-    log.info("Fetching %d days of daily data for %d tickers...",
-             HISTORY_DAYS, len(tickers))
-    df = yf.download(
-        tickers=tickers, period=f"{HISTORY_DAYS}d", interval="1d",
-        group_by="ticker", progress=False, auto_adjust=False, threads=True,
-    )
-    out: dict[str, pd.DataFrame] = {}
-    for t in tickers:
-        try:
-            sub = df[t].copy() if isinstance(df.columns, pd.MultiIndex) else df.copy()
-        except KeyError:
-            continue
-        sub = sub.dropna(how="all")
-        if not sub.empty:
-            out[t] = sub
-    return out
+    """Pull daily bars for the watchlist + NIFTY (no parquet cache — live path)."""
+    return _fetch_daily(symbols + [NIFTY_TICKER], period_days=HISTORY_DAYS)
 
 
 # ============================================================================
 # Signal evaluation (latest day only)
 # ============================================================================
 
-def _compute_breadth(
-    watchlist_data: dict[str, pd.DataFrame], day: pd.Timestamp
-) -> float:
-    above = total = 0
-    for df in watchlist_data.values():
-        if day not in df.index or len(df) < EMA_PERIOD:
-            continue
-        ema = df["Close"].ewm(span=EMA_PERIOD, adjust=False).mean().loc[day]
-        if df["Close"].loc[day] > ema:
-            above += 1
-        total += 1
-    return (above / total * 100) if total > 0 else 0.0
-
-
 def evaluate_today(
     stock_data: dict[str, pd.DataFrame],
     max_extension_pct: float,
 ) -> tuple[list[dict], dict]:
-    """Apply signal + regime to most recent trading day. Returns (alerts, regime)."""
+    """Apply the swing signal + regime to the most recent trading day.
+
+    Thin wrapper over ``swing_backtest.evaluate_swing(as_of_date=...)`` —
+    the alert path used to re-implement the same filter and breadth math
+    (loop fork). Now both paths share one implementation."""
     if NIFTY_TICKER not in stock_data:
         log.error("NIFTY data missing — cannot run.")
         return [], {}
@@ -115,63 +91,43 @@ def evaluate_today(
         return [], {}
 
     last_day = nifty.index[-1]
-    nifty_change = (
+    watchlist = {s: df for s, df in stock_data.items() if s != NIFTY_TICKER}
+
+    # Regime info, independent of any signal hits.
+    nifty_change = float(
         (nifty["Close"].iloc[-1] - nifty["Close"].iloc[-2])
         / nifty["Close"].iloc[-2] * 100
     )
-
-    watchlist = {s: df for s, df in stock_data.items() if s != NIFTY_TICKER}
-    breadth = _compute_breadth(watchlist, last_day)
-
+    breadth_series = compute_breadth_series(watchlist)
+    breadth = float(breadth_series.get(last_day, 0.0))
     regime = {
         "date": last_day,
-        "nifty_change": float(nifty_change),
-        "breadth": float(breadth),
+        "nifty_change": nifty_change,
+        "breadth": breadth,
         "regime_ok": (
             nifty_change >= NIFTY_UP_PCT and breadth >= BREADTH_THRESHOLD_PCT
         ),
     }
 
+    swing_hits = evaluate_swing(
+        watchlist, nifty,
+        apply_regime=False,            # the regime gate is applied by the caller
+        max_extension_pct=max_extension_pct,
+        as_of_date=last_day,
+    )
+
     alerts: list[dict] = []
-    for sym, df in watchlist.items():
-        if last_day not in df.index or len(df) < EMA_PERIOD + 1:
+    for sa in swing_hits:
+        sym_df = watchlist.get(sa.symbol)
+        if sym_df is None or sa.signal_date not in sym_df.index:
             continue
-
-        close = float(df["Close"].loc[last_day])
-        high = float(df["High"].loc[last_day])
-        low = float(df["Low"].loc[last_day])
-        vol = float(df["Volume"].loc[last_day])
-        if high == low or vol == 0:
-            continue
-
-        ema_now = float(
-            df["Close"].ewm(span=EMA_PERIOD, adjust=False).mean().loc[last_day]
-        )
-        avg_vol = float(df["Volume"].rolling(EMA_PERIOD).mean().loc[last_day])
-        if avg_vol == 0 or pd.isna(avg_vol):
-            continue
-
-        vol_mult = vol / avg_vol
-        rp = (close - low) / (high - low)
-        ema_pct = (close - ema_now) / ema_now * 100 if ema_now > 0 else 0.0
-
-        if vol_mult < VOLUME_MULTIPLE:
-            continue
-        if rp < RANGE_POSITION_THRESHOLD:
-            continue
-        if close <= ema_now:
-            continue
-        if ema_pct > max_extension_pct:
-            continue
-
         alerts.append({
-            "symbol": sym,
-            "close": close,
-            "vol_mult": vol_mult,
-            "range_pos": rp,
-            "ema_pct": ema_pct,
+            "symbol": sa.symbol,
+            "close": float(sym_df["Close"].loc[sa.signal_date]),
+            "vol_mult": sa.volume_mult,
+            "range_pos": sa.range_position,
+            "ema_pct": sa.ema_pct,
         })
-
     alerts.sort(key=lambda a: -a["vol_mult"])  # highest conviction first
     return alerts, regime
 

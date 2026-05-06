@@ -12,10 +12,11 @@ Tables (in alerts.db):
   alerts_sent  (existing — owned by bot.py; we read for cooldown)
 
 Public API:
-  init_db()
   refresh_asm_gsm()      — scrape NSE ASM/GSM lists; persist
   refresh_pledge_data()  — populate from HIGH_PLEDGE_STOCKS dict (TODO: BSE XML)
   is_suppressed(sym, cooldown_minutes) -> (bool, reason)
+
+  Schema + init_db live in bot/db.py.
 
 Run standalone (`python suppression.py`) to refresh + dump the latest
 ASM/GSM tables to stdout. Useful for verifying the scraper.
@@ -50,22 +51,7 @@ USER_AGENT = (
 )
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS risk_flags (
-    symbol     TEXT NOT NULL,
-    flag_type  TEXT NOT NULL CHECK (flag_type IN ('asm', 'gsm', 'pledge_pct', 'high_pe')),
-    value      TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (symbol, flag_type)
-);
-CREATE INDEX IF NOT EXISTS idx_risk_flags_type ON risk_flags(flag_type);
-"""
-
-
-def init_db() -> None:
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.executescript(SCHEMA)
-
+# Schema + init_db live in bot/db.py — this module only reads/writes rows.
 
 # ============================================================================
 # Pledge data (manual for now)
@@ -240,6 +226,7 @@ async def _fetch_first_working(
 
 async def refresh_asm_gsm() -> dict[str, int]:
     """Pull current ASM/GSM lists from NSE and replace the rows in risk_flags."""
+    from bot.db import init_db
     init_db()
     counts = {"asm": 0, "gsm": 0}
     client = await _nse_session()

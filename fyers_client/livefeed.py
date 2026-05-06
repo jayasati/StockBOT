@@ -11,8 +11,8 @@ from __future__ import annotations
 import logging
 import threading
 import time as _time
-from datetime import datetime
-from zoneinfo import ZoneInfo
+
+from bot.schedule import in_session
 
 from .auth import authenticate
 from .creds import FyersCreds, load_creds
@@ -21,21 +21,10 @@ from .websocket import TickHandler
 
 log = logging.getLogger("alertbot.fyers")
 
-IST = ZoneInfo("Asia/Kolkata")
-
 _RECONNECT_BACKOFF = (1, 2, 4, 8, 16, 32, 60)
 _REAUTH_AFTER_N_FAILURES = 3
 _HEARTBEAT_INTERVAL_SEC = 5
 _HEARTBEAT_SILENCE_WARN_SEC = 30
-_MARKET_OPEN = datetime.min.time().replace(hour=9, minute=15)
-_MARKET_CLOSE = datetime.min.time().replace(hour=15, minute=30)
-
-
-def _is_market_hours_now() -> bool:
-    now = datetime.now(IST)
-    if now.weekday() >= 5:
-        return False
-    return _MARKET_OPEN <= now.time() <= _MARKET_CLOSE
 
 
 class LiveFeed:
@@ -213,7 +202,7 @@ class LiveFeed:
         while not self._stop_event.wait(_HEARTBEAT_INTERVAL_SEC):
             if not self._running:
                 return
-            if not _is_market_hours_now():
+            if not in_session():
                 continue
             now = _time.time()
             for sym in self._symbols:

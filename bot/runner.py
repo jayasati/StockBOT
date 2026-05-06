@@ -9,10 +9,10 @@ import suppression
 
 from . import market_data
 from .config import settings
+from .db import init_db
 from .notifier import Telegram
 from .scanner import scan_once
 from .schedule import is_market_open, seconds_until_market_open
-from .storage import init_db
 from .watchlist import WATCHLIST
 
 log = logging.getLogger("alertbot")
@@ -20,8 +20,6 @@ log = logging.getLogger("alertbot")
 
 async def main() -> None:
     init_db()
-    filings.init_db()
-    suppression.init_db()
     market_data.ensure_live_feed()
     await market_data.refresh_asm_gsm_if_stale()
     telegram = Telegram(settings.telegram_bot_token, settings.telegram_chat_id)
