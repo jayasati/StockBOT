@@ -63,7 +63,7 @@ Edit `.env` and paste your bot token and chat ID.
 ### 5. Run
 
 ```bash
-python bot.py
+python -m bot
 ```
 
 You should immediately get a "Bot started" message on Telegram. From here it scans every 5 minutes during market hours (Mon-Fri, 09:15-15:30 IST).
@@ -72,17 +72,9 @@ You should immediately get a "Bot started" message on Telegram. From here it sca
 
 ### Watchlist
 
-Edit the `WATCHLIST` list in `bot.py`. Use NSE symbols with `.NS` suffix:
+The watchlist is loaded from `ind_nifty500list.csv` at startup (downloaded from [NSE](https://archives.nseindia.com/content/indices/ind_nifty500list.csv)). Only EQ-series rows are kept; the `.NS` suffix is appended automatically for yfinance.
 
-```python
-WATCHLIST = [
-    "RELIANCE.NS",
-    "TATACHEM.NS",
-    "YOURFAVORITE.NS",
-]
-```
-
-For BSE stocks use `.BO` suffix instead. To find the right symbol, search the company on Yahoo Finance India.
+To change the universe, replace that CSV with any file that has a `Symbol` column. The loader lives in `bot/watchlist.py`.
 
 ### Threshold
 
@@ -93,7 +85,7 @@ For BSE stocks use `.BO` suffix instead. To find the right symbol, search the co
 
 ### Scoring weights
 
-The weights live in `score_stock()` inside `bot.py`. Adjust freely — that function is where the alpha is. The current weights are tuned to the Indian-market PDF you provided. You'll likely want to retune them after seeing what kinds of moves they catch and miss.
+The weights live in `score_stock()` inside `bot/scoring.py`. Adjust freely — that function is where the alpha is. The current weights are tuned to the Indian-market PDF you provided. You'll likely want to retune them after seeing what kinds of moves they catch and miss.
 
 ## Running 24/7
 
@@ -111,7 +103,7 @@ After=network.target
 Type=simple
 User=youruser
 WorkingDirectory=/home/youruser/stock_alert_bot
-ExecStart=/home/youruser/stock_alert_bot/venv/bin/python bot.py
+ExecStart=/home/youruser/stock_alert_bot/venv/bin/python -m bot
 Restart=on-failure
 RestartSec=30
 
