@@ -648,8 +648,10 @@ def main() -> None:
         unittest.main(argv=[sys.argv[0], "-v"], exit=True)
 
     # Make replay deterministic — score_stock will call our patched version
-    # instead of the wall-clock-dependent one.
-    bot.compute_volume_ratio = _bt_volume_ratio
+    # instead of the wall-clock-dependent one. We patch on bot.indicators
+    # because score_stock now resolves compute_volume_ratio via that module
+    # at call time (post-modularisation).
+    bot.indicators.compute_volume_ratio = _bt_volume_ratio
 
     symbols = bot.WATCHLIST[: args.symbols] if args.symbols else bot.WATCHLIST
 
