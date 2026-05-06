@@ -25,7 +25,9 @@ import yfinance as yf
 from dotenv import load_dotenv
 
 import filings
+import fyers_client
 import suppression
+from data import realtime_feed
 
 load_dotenv()
 logging.basicConfig(
@@ -189,9 +191,71 @@ def _yf_download_chunked(
     return result
 
 
+_LIVE_FEED_READY = False
+COLD_START_BAR_THRESHOLD = 30
+
+
+def _to_upper_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """realtime_feed returns lowercase columns (matches features.py); the
+    legacy scoring functions in this file expect yfinance's uppercase shape.
+    Rename at the boundary so neither side has to know about the other."""
+    return df.rename(columns={
+        "open": "Open", "high": "High", "low": "Low",
+        "close": "Close", "volume": "Volume",
+    })
+
+
+def ensure_live_feed() -> None:
+    """Open the Fyers WebSocket once. Idempotent. If Fyers auth isn't set
+    up (new install) we log and fall through to yfinance — the cold-start
+    fallback below already handles that path."""
+    global _LIVE_FEED_READY
+    if _LIVE_FEED_READY or not WATCHLIST:
+        return
+    try:
+        fy_symbols = [fyers_client.to_fyers(s) for s in WATCHLIST]
+        realtime_feed.subscribe(fy_symbols)
+        _LIVE_FEED_READY = True
+        log.info("Live feed connected; subscribed to %d Fyers symbols", len(fy_symbols))
+    except Exception as e:
+        log.warning("Live feed unavailable (%s) — using yfinance only", e)
+
+
 def fetch_intraday(symbols: list[str]) -> dict[str, pd.DataFrame]:
-    """Fetch 5-day, 5-minute OHLCV. Chunked at YF_CHUNK_SIZE for scale."""
-    return _yf_download_chunked(symbols, period="5d", interval="5m")
+    """Return last 100 5-min bars per symbol from the live Fyers feed.
+
+    Cold-start fallback: when a symbol has fewer than COLD_START_BAR_THRESHOLD
+    bars cached, fetch from yfinance once, seed bars_5m, and serve from there.
+    Subsequent scans hit the warm cache."""
+    out: dict[str, pd.DataFrame] = {}
+    cold: list[str] = []
+
+    for sym in symbols:
+        fy_sym = fyers_client.to_fyers(sym)
+        df_lower = realtime_feed.get_5m_bars(fy_sym, n=100)
+        if len(df_lower) < COLD_START_BAR_THRESHOLD:
+            cold.append(sym)
+        else:
+            out[sym] = _to_upper_columns(df_lower)
+
+    if cold:
+        log.info(
+            "Cold cache for %d/%d symbol(s); seeding from yfinance",
+            len(cold), len(symbols),
+        )
+        yf_data = _yf_download_chunked(cold, period="5d", interval="5m")
+        for sym, yf_df in yf_data.items():
+            fy_sym = fyers_client.to_fyers(sym)
+            try:
+                realtime_feed.seed_from_yfinance(fy_sym, yf_df)
+            except Exception as e:
+                log.warning("seed_from_yfinance(%s) failed: %s", sym, e)
+            # After seeding, the warm cache should serve the next call;
+            # for THIS scan we use the yfinance frame directly so we don't
+            # double-pay the SQLite round trip.
+            out[sym] = yf_df
+
+    return out
 
 
 def fetch_daily_batch(symbols: list[str], days: int = 60) -> dict[str, pd.DataFrame]:
@@ -616,6 +680,7 @@ async def main() -> None:
     init_db()
     filings.init_db()
     suppression.init_db()
+    ensure_live_feed()
     await refresh_asm_gsm_if_stale()
     telegram = Telegram(settings.telegram_bot_token, settings.telegram_chat_id)
 

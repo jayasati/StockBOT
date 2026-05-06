@@ -1,53 +1,54 @@
 """
-Fyers broker integration.
+Fyers broker integration — manual auth + WebSocket data feed.
 
-Phase A — auth + token cache. Phases B-F (WebSocket, bar builder,
-reconnect, full subscription) come next.
+Auth flow (one-time per day, ~15 sec):
+  1. ``python fyers_client.py auth`` prints a Fyers OAuth URL
+  2. Open URL in your browser, log in (PIN + TOTP from your authenticator)
+  3. Browser redirects to your registered redirect URI with ``?auth_code=...``
+  4. Paste that full URL back into the terminal
+  5. SDK exchanges auth_code → access_token; we cache it in .fyers_token.json
+     until the next 06:00 IST (Fyers' daily token rollover)
 
-Auto-login flow:
-  1. POST send_login_otp_v2  → request_key
-  2. POST verify_otp (TOTP)  → request_key
-  3. POST verify_pin_v2      → bearer access token (login-domain only)
-  4. POST /api/v3/token      → auth_code in redirect URL
-  5. SDK exchanges auth_code → final access_token (data-domain)
+The bot reads the cached token at startup. As long as you do step 1–4 once
+each morning before 09:15 IST, the bot runs unattended for the trading day.
 
-Cached on disk in .fyers_token.json. Token is treated as expired at the
-next 06:00 IST (Fyers tokens roll over around the start of the trading
-day). On 401 from a downstream call, force a re-auth.
+We previously tried a fully automated TOTP-based login through Fyers'
+internal vagator endpoints; Fyers added a JS-minted captcha in 2026 that
+made that flow impossible from raw Python. Dropped — manual is the only
+supported path now.
 
 CLI:
-  python fyers_client.py auth         — log in, cache token, print summary
-  python fyers_client.py auth --force — bypass cache, full re-login
-  python fyers_client.py validate     — use cached token to call get_profile()
+  python fyers_client.py auth          — open the manual login flow, cache token
+  python fyers_client.py auth --force  — bypass cache and re-login
+  python fyers_client.py validate      — use cached token to call get_profile()
+  python fyers_client.py ticks         — verify WebSocket: print live ticks
+  python fyers_client.py bars          — verify aggregator: print 5-min bars on Ctrl-C
+  python fyers_client.py record <out.jsonl> <secs> [SYM ...]  — capture a tick fixture
 """
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
 import sys
 import threading
+import time as _time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-import httpx
 import pandas as pd
-import pyotp
 from dotenv import load_dotenv
 
 log = logging.getLogger("alertbot.fyers")
 
 IST = ZoneInfo("Asia/Kolkata")
 TOKEN_CACHE = Path(".fyers_token.json")
-
-FYERS_VAGATOR = "https://api-t2.fyers.in/vagator/v2"
-FYERS_API_T1 = "https://api-t1.fyers.in/api/v3"
 
 
 # ============================================================================
@@ -58,34 +59,22 @@ FYERS_API_T1 = "https://api-t1.fyers.in/api/v3"
 class FyersCreds:
     app_id: str          # e.g. "XYZ123ABC-100"
     secret_id: str
-    redirect_uri: str
-    user_id: str         # Fyers login id, e.g. "AB12345"
-    pin: str             # 4-digit Fyers PIN
-    totp_secret: str     # base32 TOTP secret
+    redirect_uri: str    # must match what's registered in myapi.fyers.in
 
 
 def load_creds() -> FyersCreds:
     load_dotenv()
-    required = (
-        "FYERS_APP_ID", "FYERS_SECRET_ID", "FYERS_REDIRECT_URI",
-        "FYERS_USER_ID", "FYERS_PIN", "FYERS_TOTP_SECRET",
-    )
+    required = ("FYERS_APP_ID", "FYERS_SECRET_ID", "FYERS_REDIRECT_URI")
     missing = [v for v in required if not os.getenv(v)]
     if missing:
         raise RuntimeError(
             f"Missing Fyers env vars: {', '.join(missing)}. "
             f"Copy env.example to .env and fill them in."
         )
-    # Normalize TOTP secret — pyotp accepts only clean base32, but copy-paste
-    # often introduces spaces or lowercase letters. Strip and uppercase.
-    totp_secret = os.environ["FYERS_TOTP_SECRET"].replace(" ", "").upper()
     return FyersCreds(
         app_id=os.environ["FYERS_APP_ID"].strip(),
         secret_id=os.environ["FYERS_SECRET_ID"].strip(),
         redirect_uri=os.environ["FYERS_REDIRECT_URI"].strip(),
-        user_id=os.environ["FYERS_USER_ID"].strip(),
-        pin=os.environ["FYERS_PIN"].strip(),
-        totp_secret=totp_secret,
     )
 
 
@@ -131,97 +120,11 @@ def _save_token(access_token: str, expiry: datetime) -> None:
 
 
 # ============================================================================
-# Auto-login (5 hops)
+# Manual login (browser OAuth flow)
 # ============================================================================
 
-def _b64(s: str) -> str:
-    return base64.b64encode(s.encode()).decode()
-
-
-def _post_json(client: httpx.Client, url: str, body: dict, headers: dict | None = None) -> dict:
-    """POST + parse JSON, surfacing the response body on any error."""
-    r = client.post(url, json=body, headers=headers or {})
-    if r.status_code >= 400:
-        # Fyers wraps the actual reason in the JSON body — surface it.
-        snippet = r.text[:400]
-        raise RuntimeError(f"{url} returned HTTP {r.status_code}: {snippet}")
-    try:
-        return r.json()
-    except ValueError:
-        raise RuntimeError(f"{url} returned non-JSON: {r.text[:200]}")
-
-
-def _login_send_otp(client: httpx.Client, user_id: str) -> str:
-    data = _post_json(
-        client,
-        f"{FYERS_VAGATOR}/send_login_otp_v2",
-        {"fy_id": _b64(user_id), "app_id": "2"},
-    )
-    rk = data.get("request_key")
-    if not rk:
-        raise RuntimeError(f"send_login_otp returned no request_key: {data}")
-    return rk
-
-
-def _login_verify_otp(client: httpx.Client, request_key: str, otp: str) -> str:
-    data = _post_json(
-        client,
-        f"{FYERS_VAGATOR}/verify_otp",
-        {"request_key": request_key, "otp": otp},
-    )
-    rk = data.get("request_key")
-    if not rk:
-        raise RuntimeError(f"verify_otp returned no request_key: {data}")
-    return rk
-
-
-def _login_verify_pin(client: httpx.Client, request_key: str, pin: str) -> str:
-    data = _post_json(
-        client,
-        f"{FYERS_VAGATOR}/verify_pin_v2",
-        {
-            "request_key": request_key,
-            "identifier": pin,
-            "identity_type": "pin",
-        },
-    )
-    inner = data.get("data") or {}
-    token = inner.get("access_token")
-    if not token:
-        raise RuntimeError(f"verify_pin failed: {data}")
-    return token
-
-
-def _login_get_auth_code(
-    client: httpx.Client, bearer: str, creds: FyersCreds
-) -> str:
-    data = _post_json(
-        client,
-        f"{FYERS_API_T1}/token",
-        {
-            "fyers_id": creds.user_id,
-            "app_id": creds.app_id.split("-")[0],  # strip "-100" suffix
-            "redirect_uri": creds.redirect_uri,
-            "appType": "100",
-            "code_challenge": "",
-            "state": "None",
-            "scope": "",
-            "nonce": "",
-            "response_type": "code",
-            "create_cookie": True,
-        },
-        headers={"Authorization": f"Bearer {bearer}"},
-    )
-    redirect = data.get("Url") or data.get("url") or ""
-    qs = parse_qs(urlparse(redirect).query)
-    auth_code = (qs.get("auth_code") or qs.get("code") or [None])[0]
-    if not auth_code:
-        raise RuntimeError(f"no auth_code in /token response: {data}")
-    return auth_code
-
-
 def _exchange_auth_code(creds: FyersCreds, auth_code: str) -> str:
-    """Use the SDK's SessionModel to do the standard auth_code → access_token swap (handles appIdHash)."""
+    """Use the SDK's SessionModel to do the standard auth_code → access_token swap."""
     from fyers_apiv3 import fyersModel
     session = fyersModel.SessionModel(
         client_id=creds.app_id,
@@ -238,32 +141,8 @@ def _exchange_auth_code(creds: FyersCreds, auth_code: str) -> str:
     return token
 
 
-def _authenticate_auto() -> str:
-    """Fully automated login via TOTP (5 hops through Fyers vagator endpoints)."""
-    creds = load_creds()
-    log.info("Starting Fyers auto-login for user %s", creds.user_id)
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-    }
-    with httpx.Client(timeout=20, headers=headers) as client:
-        rk1 = _login_send_otp(client, creds.user_id)
-        log.info("Step 1/5 OK — OTP request key acquired")
-        otp = pyotp.TOTP(creds.totp_secret).now()
-        rk2 = _login_verify_otp(client, rk1, otp)
-        log.info("Step 2/5 OK — TOTP verified")
-        bearer = _login_verify_pin(client, rk2, creds.pin)
-        log.info("Step 3/5 OK — PIN verified")
-        auth_code = _login_get_auth_code(client, bearer, creds)
-        log.info("Step 4/5 OK — auth_code obtained")
-    access_token = _exchange_auth_code(creds, auth_code)
-    log.info("Step 5/5 OK — access_token issued")
-    return access_token
-
-
 def _authenticate_manual() -> str:
-    """Manual flow: print a login URL, wait for the user to paste the redirect."""
+    """Print a login URL, wait for the user to paste back the redirect URL."""
     creds = load_creds()
     from fyers_apiv3 import fyersModel
     session = fyersModel.SessionModel(
@@ -276,15 +155,14 @@ def _authenticate_manual() -> str:
     login_url = session.generate_authcode()
     print()
     print("=" * 70)
-    print("Manual Fyers login")
+    print("Fyers manual login")
     print("=" * 70)
     print()
     print("1. Open this URL in your browser:")
     print()
     print(f"   {login_url}")
     print()
-    print("2. Log in with your Fyers credentials (PIN + TOTP from your")
-    print("   authenticator app).")
+    print("2. Log in with PIN + TOTP from your authenticator app.")
     print()
     print("3. Your browser will redirect to your registered redirect URI")
     print(f"   ({creds.redirect_uri}). The page may show 'site can't be reached'")
@@ -311,15 +189,16 @@ def _authenticate_manual() -> str:
     return access_token
 
 
-def authenticate(force: bool = False, manual: bool = False) -> str:
-    """Return a valid Fyers access token, doing a full login if cache is stale or `force`."""
+def authenticate(force: bool = False) -> str:
+    """Return a valid Fyers access token. Uses the cached one if not expired,
+    otherwise prompts for the manual paste flow."""
     if not force:
         cached = _load_cached_token()
         if cached:
             log.info("Using cached Fyers token")
             return cached
 
-    access_token = _authenticate_manual() if manual else _authenticate_auto()
+    access_token = _authenticate_manual()
     expiry = _next_token_expiry()
     _save_token(access_token, expiry)
     log.info("Fyers token cached until %s IST", expiry.isoformat())
@@ -327,16 +206,10 @@ def authenticate(force: bool = False, manual: bool = False) -> str:
 
 
 # ============================================================================
-# Tick → 5-minute OHLCV bar aggregator
+# Tick → 5-minute OHLCV bar aggregator (legacy in-memory store)
 # ============================================================================
-# Ticks arrive on a daemon thread; the bot reads bars from the async loop.
-# A single threading.Lock around mutations is plenty for this volume — even
-# at 500 symbols × multiple ticks/sec, contention is negligible.
-#
-# Volume math: Fyers ticks carry vol_traded_today (cumulative since 09:15).
-# Each bar's volume = (vol_traded_today at bar close) − (vol at bar open).
-# When a tick crosses the bar boundary, we close the previous bar's end_vol
-# at the new tick's vol, so no volume is lost in the seam.
+# Used by the `python fyers_client.py bars` CLI verifier. The production
+# aggregator that bot.py reads from lives in data/realtime_feed.py.
 # ============================================================================
 
 BAR_INTERVAL_SECONDS = 300  # 5 minutes
@@ -373,7 +246,7 @@ def _epoch_to_ist(epoch_seconds: int | float) -> datetime:
 
 
 class TickStore:
-    """Thread-safe latest-price + rolling-bar store. Singleton via module-level instance."""
+    """Thread-safe latest-price + rolling-bar store for the CLI verifier."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -384,7 +257,6 @@ class TickStore:
         self._tick_count = 0
 
     def on_tick(self, msg: dict) -> None:
-        # Lifecycle frames (cn / ful / sub) carry no market data.
         if msg.get("type") != "sf":
             return
         symbol = msg.get("symbol")
@@ -404,7 +276,6 @@ class TickStore:
             cur = self._current_bar.get(symbol)
             if cur is None or cur.ts != bar_ts:
                 if cur is not None:
-                    # Capture all volume up to the boundary, then archive.
                     cur.end_vol = vol
                     self._bars.setdefault(
                         symbol, deque(maxlen=MAX_BARS_PER_SYMBOL)
@@ -420,7 +291,6 @@ class TickStore:
                 cur.end_vol = vol
 
     def get_bars_df(self, symbol: str) -> pd.DataFrame:
-        """Return bars in the same shape yfinance returns: index=Datetime, cols=Open/High/Low/Close/Volume."""
         with self._lock:
             archived = list(self._bars.get(symbol, ()))
             current = self._current_bar.get(symbol)
@@ -453,20 +323,12 @@ class TickStore:
             }
 
 
-# Singleton — bot.py will read from this same instance.
 TICK_STORE = TickStore()
 
 
 # ============================================================================
 # WebSocket — live tick subscription
 # ============================================================================
-# fyers_apiv3.FyersWebsocket.data_ws runs the connection on a background
-# thread once .connect() is called. The access_token field expects the
-# combined "<app_id>:<access_token>" format — passing just the token
-# silently fails with no error.
-# ============================================================================
-
-from typing import Callable
 
 TickHandler = Callable[[dict], None]
 
@@ -480,8 +342,9 @@ def start_data_socket(
 ):
     """Open a Fyers WebSocket, subscribe to symbols, call on_tick per message.
 
-    Returns the FyersDataSocket instance. Caller is responsible for
-    keeping the main thread alive (the socket runs in a daemon thread).
+    Thin helper retained for the CLI ticks/bars verifiers. Production code
+    (bot.py) uses ``LiveFeed`` below — it adds reconnect, re-auth on close,
+    and per-symbol heartbeat.
     """
     creds = load_creds()
     token = authenticate()
@@ -523,6 +386,256 @@ def start_data_socket(
 
 
 # ============================================================================
+# LiveFeed — production WebSocket wrapper
+# ============================================================================
+# Wraps FyersDataSocket with:
+#   * exponential-backoff reconnect (1, 2, 4, 8, 16, 32, 60, 60... seconds)
+#   * auto re-auth after N consecutive failures (token rolls over at 06:00 IST)
+#   * per-symbol heartbeat — logs WARNING if a subscribed symbol has been
+#     silent for >30s during market hours
+# ============================================================================
+
+_RECONNECT_BACKOFF = (1, 2, 4, 8, 16, 32, 60)
+_REAUTH_AFTER_N_FAILURES = 3
+_HEARTBEAT_INTERVAL_SEC = 5
+_HEARTBEAT_SILENCE_WARN_SEC = 30
+_MARKET_OPEN = datetime.min.time().replace(hour=9, minute=15)
+_MARKET_CLOSE = datetime.min.time().replace(hour=15, minute=30)
+
+
+def _is_market_hours_now() -> bool:
+    now = datetime.now(IST)
+    if now.weekday() >= 5:
+        return False
+    return _MARKET_OPEN <= now.time() <= _MARKET_CLOSE
+
+
+class LiveFeed:
+    """Live tick stream with reconnect, re-auth, and heartbeat."""
+
+    def __init__(
+        self,
+        symbols: list[str],
+        on_tick: TickHandler,
+        access_token: str | None = None,
+        *,
+        data_type: str = "SymbolUpdate",
+    ) -> None:
+        self._symbols: list[str] = list(symbols)
+        self._on_tick_user = on_tick
+        self._data_type = data_type
+        self._access_token = access_token
+        self._creds: FyersCreds | None = None
+
+        self._lock = threading.Lock()
+        self._ws = None
+        self._running = False
+        self._consecutive_failures = 0
+        self._reconnect_thread: threading.Thread | None = None
+        self._heartbeat_thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._last_tick_at: dict[str, float] = {}
+        self._silence_logged: set[str] = set()
+
+    # -- lifecycle -------------------------------------------------------
+
+    def start(self) -> None:
+        if self._running:
+            log.warning("LiveFeed already running")
+            return
+        self._running = True
+        self._stop_event.clear()
+        self._connect()
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop, name="livefeed-heartbeat", daemon=True
+        )
+        self._heartbeat_thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+        self._stop_event.set()
+        with self._lock:
+            ws = self._ws
+            self._ws = None
+        if ws is not None:
+            try:
+                ws.close_connection()
+            except Exception:
+                pass
+
+    def add_symbols(self, symbols: list[str]) -> None:
+        new = [s for s in symbols if s not in self._symbols]
+        if not new:
+            return
+        self._symbols.extend(new)
+        with self._lock:
+            ws = self._ws
+        if ws is not None:
+            try:
+                ws.subscribe(symbols=new, data_type=self._data_type)
+                log.info("Extended subscription with %d symbol(s)", len(new))
+            except Exception as e:
+                log.error("subscribe(%s) failed: %s", new, e)
+
+    # -- connection ------------------------------------------------------
+
+    def _connect(self) -> None:
+        from fyers_apiv3.FyersWebsocket import data_ws
+
+        if self._creds is None:
+            self._creds = load_creds()
+        if self._access_token is None:
+            self._access_token = authenticate()
+
+        ws = data_ws.FyersDataSocket(
+            access_token=f"{self._creds.app_id}:{self._access_token}",
+            log_path="",
+            litemode=False,
+            write_to_file=False,
+            reconnect=False,    # we own the policy
+            on_connect=self._on_connect,
+            on_close=self._on_close,
+            on_error=self._on_error,
+            on_message=self._on_message,
+        )
+        with self._lock:
+            self._ws = ws
+        ws.connect()
+
+    def _schedule_reconnect(self) -> None:
+        if not self._running:
+            return
+        if self._reconnect_thread is not None and self._reconnect_thread.is_alive():
+            return
+        self._reconnect_thread = threading.Thread(
+            target=self._reconnect_loop, name="livefeed-reconnect", daemon=True
+        )
+        self._reconnect_thread.start()
+
+    def _reconnect_loop(self) -> None:
+        while self._running:
+            self._consecutive_failures += 1
+            idx = min(self._consecutive_failures - 1, len(_RECONNECT_BACKOFF) - 1)
+            wait = _RECONNECT_BACKOFF[idx]
+            log.warning(
+                "Reconnecting in %ds (attempt %d, last close was failure-class)",
+                wait, self._consecutive_failures,
+            )
+            if self._stop_event.wait(wait):
+                return
+            if self._consecutive_failures >= _REAUTH_AFTER_N_FAILURES:
+                log.warning("Forcing token refresh before reconnect")
+                try:
+                    self._access_token = authenticate(force=True)
+                except Exception as e:
+                    log.error("Re-auth failed: %s", e)
+                    continue
+            try:
+                self._connect()
+                return
+            except Exception as e:
+                log.error("Reconnect failed: %s", e)
+
+    # -- callbacks (run on the SDK's WS thread) --------------------------
+
+    def _on_connect(self) -> None:
+        with self._lock:
+            ws = self._ws
+        log.info("LiveFeed connected; subscribing to %d symbol(s)", len(self._symbols))
+        self._consecutive_failures = 0
+        self._silence_logged.clear()
+        if ws is not None and self._symbols:
+            try:
+                ws.subscribe(symbols=self._symbols, data_type=self._data_type)
+            except Exception as e:
+                log.error("Initial subscribe failed: %s", e)
+
+    def _on_close(self, code) -> None:
+        log.info("LiveFeed closed (code=%s)", code)
+        with self._lock:
+            self._ws = None
+        if self._running:
+            self._schedule_reconnect()
+
+    def _on_error(self, err) -> None:
+        log.error("LiveFeed error: %s", err)
+        msg = str(err).lower() if err is not None else ""
+        if "401" in msg or "unauthor" in msg or "invalid token" in msg:
+            log.warning("Auth failure detected — clearing cached token")
+            try:
+                if TOKEN_CACHE.exists():
+                    TOKEN_CACHE.unlink()
+            except OSError:
+                pass
+            self._access_token = None
+
+    def _on_message(self, msg: dict) -> None:
+        sym = msg.get("symbol") if isinstance(msg, dict) else None
+        if sym:
+            self._last_tick_at[sym] = _time.time()
+            self._silence_logged.discard(sym)
+        try:
+            self._on_tick_user(msg)
+        except Exception:
+            log.exception("user on_tick handler failed")
+
+    # -- heartbeat -------------------------------------------------------
+
+    def _heartbeat_loop(self) -> None:
+        while not self._stop_event.wait(_HEARTBEAT_INTERVAL_SEC):
+            if not self._running:
+                return
+            if not _is_market_hours_now():
+                continue
+            now = _time.time()
+            for sym in self._symbols:
+                last = self._last_tick_at.get(sym)
+                if last is None:
+                    continue
+                gap = now - last
+                if gap > _HEARTBEAT_SILENCE_WARN_SEC and sym not in self._silence_logged:
+                    log.warning(
+                        "No tick for %s in %.0fs (heartbeat warning)", sym, gap
+                    )
+                    self._silence_logged.add(sym)
+
+
+# ============================================================================
+# record_ticks — debug helper to capture a JSONL fixture
+# ============================================================================
+
+def record_ticks(
+    symbols: list[str],
+    output_path: str | Path,
+    duration_sec: int,
+) -> int:
+    """Subscribe to ``symbols`` and dump every incoming tick to JSONL for ``duration_sec`` seconds."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    f = output_path.open("w", encoding="utf-8")
+    counter = {"n": 0}
+
+    def _capture(msg: dict) -> None:
+        if msg.get("type") != "sf":
+            return
+        f.write(json.dumps(msg) + "\n")
+        counter["n"] += 1
+
+    feed = LiveFeed(symbols=symbols, on_tick=_capture)
+    try:
+        feed.start()
+        deadline = _time.time() + duration_sec
+        log.info("Recording ticks to %s for %ds...", output_path, duration_sec)
+        while _time.time() < deadline:
+            _time.sleep(1)
+    finally:
+        feed.stop()
+        f.close()
+    log.info("Captured %d ticks to %s", counter["n"], output_path)
+    return counter["n"]
+
+
+# ============================================================================
 # Symbol conversion: yfinance "<SYM>.NS" <-> Fyers "NSE:<SYM>-EQ"
 # ============================================================================
 
@@ -545,9 +658,9 @@ def to_yf(fy_symbol: str) -> str:
 # CLI
 # ============================================================================
 
-def _cli_auth(force: bool, manual: bool) -> int:
+def _cli_auth(force: bool) -> int:
     try:
-        token = authenticate(force=force, manual=manual)
+        token = authenticate(force=force)
     except Exception as e:
         log.exception("Auth failed: %s", e)
         return 2
@@ -560,52 +673,32 @@ def _cli_auth(force: bool, manual: bool) -> int:
     return 0
 
 
-def _cli_totp() -> int:
-    """Print the current TOTP and check system-clock drift vs an internet time source."""
+def _cli_validate() -> int:
     try:
+        token = authenticate()
         creds = load_creds()
-    except RuntimeError as e:
-        print(f"FAIL: {e}")
-        return 2
-    secret = creds.totp_secret
-    print(f"TOTP secret length: {len(secret)} chars")
-    print(f"TOTP secret first/last 2 chars: {secret[:2]}...{secret[-2:]} (sanity check, not full secret)")
-    try:
-        code = pyotp.TOTP(secret).now()
     except Exception as e:
-        print(f"FAIL: pyotp couldn't parse the secret ({e}).")
-        print("Likely cause: secret has non-base32 characters. Valid chars: A-Z, 2-7, optionally =.")
+        log.exception("Auth failed: %s", e)
         return 2
-    now = datetime.now(IST)
-    print(f"Current TOTP code (now): {code}")
-    print(f"System time (IST):       {now.strftime('%Y-%m-%d %H:%M:%S')}")
-    # Drift check: hit a public time API and compare
-    try:
-        r = httpx.get("https://worldtimeapi.org/api/timezone/Asia/Kolkata", timeout=8)
-        net_dt = datetime.fromisoformat(r.json()["datetime"]).replace(tzinfo=None)
-        local_dt = now.replace(tzinfo=None)
-        drift = (local_dt - net_dt).total_seconds()
-        print(f"Internet time (IST):     {net_dt.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Drift: {drift:+.1f}s {'(OK)' if abs(drift) < 5 else '(TOO HIGH — fix with: w32tm /resync)'}")
-    except Exception as e:
-        print(f"(skipped drift check: {e})")
-    print()
-    print("Compare the TOTP code above with the one your authenticator app shows for Fyers.")
-    print("They MUST match. If they don't, the FYERS_TOTP_SECRET in .env is wrong.")
+    from fyers_apiv3 import fyersModel
+    fyers = fyersModel.FyersModel(
+        client_id=creds.app_id, token=token, log_path=""
+    )
+    profile = fyers.get_profile()
+    print(json.dumps(profile, indent=2))
+    if profile.get("s") != "ok":
+        return 3
     return 0
 
 
 def _cli_ticks() -> int:
-    """Phase B verify: subscribe to 3 symbols and print incoming ticks."""
-    import time
+    """Subscribe to 3 symbols and print incoming ticks."""
     symbols = ["NSE:RELIANCE-EQ", "NSE:TCS-EQ", "NSE:HDFCBANK-EQ"]
-    print("Phase B WebSocket test — subscribing to:")
+    print("WebSocket test — subscribing to:")
     for s in symbols:
         print(f"   {s}")
     print()
     print("Ticks flow only during NSE market hours (Mon-Fri 09:15-15:30 IST).")
-    print("Pre-market: you should see a 'WS connected' line and no ticks (that's OK).")
-    print("During market: ticks should arrive within ~1s.")
     print("Press Ctrl+C to stop.")
     print()
 
@@ -618,7 +711,7 @@ def _cli_ticks() -> int:
     try:
         start_data_socket(symbols, on_tick)
         while True:
-            time.sleep(1)
+            _time.sleep(1)
     except KeyboardInterrupt:
         print(f"\nStopped. {counter['n']} ticks received total.")
         return 0
@@ -628,23 +721,21 @@ def _cli_ticks() -> int:
 
 
 def _cli_bars() -> int:
-    """Phase C verify: subscribe to 3 symbols and dump the aggregated bars on stop."""
-    import time
+    """Subscribe to 3 symbols and dump the aggregated bars on stop."""
     symbols = ["NSE:RELIANCE-EQ", "NSE:TCS-EQ", "NSE:HDFCBANK-EQ"]
-    print("Phase C bar-aggregator test — subscribing to:")
+    print("Bar-aggregator test — subscribing to:")
     for s in symbols:
         print(f"   {s}")
     print()
     print("Run during market hours (09:15-15:30 IST) for at least one full")
-    print("5-minute boundary crossing (ideally 10+ minutes) so you see closed")
-    print("bars plus the in-progress one. Ctrl+C to stop and dump.")
+    print("5-minute boundary crossing. Ctrl+C to stop and dump.")
     print()
     try:
         start_data_socket(symbols, TICK_STORE.on_tick)
         last_log = 0.0
         while True:
-            time.sleep(2)
-            now = time.time()
+            _time.sleep(2)
+            now = _time.time()
             if now - last_log >= 10:
                 stats = TICK_STORE.stats()
                 print(
@@ -672,22 +763,19 @@ def _cli_bars() -> int:
         return 2
 
 
-def _cli_validate() -> int:
-    """Use the token to make a real API call (get_profile)."""
+def _cli_record(argv: list[str]) -> int:
+    if len(argv) < 4:
+        print("usage: python fyers_client.py record <output.jsonl> <duration_sec> [SYM1 SYM2 ...]")
+        return 1
+    out = argv[2]
     try:
-        token = authenticate()
-        creds = load_creds()
-    except Exception as e:
-        log.exception("Auth failed: %s", e)
-        return 2
-    from fyers_apiv3 import fyersModel
-    fyers = fyersModel.FyersModel(
-        client_id=creds.app_id, token=token, log_path=""
-    )
-    profile = fyers.get_profile()
-    print(json.dumps(profile, indent=2))
-    if profile.get("s") != "ok":
-        return 3
+        dur = int(argv[3])
+    except ValueError:
+        print(f"duration must be an integer; got {argv[3]!r}")
+        return 1
+    syms = argv[4:] or ["NSE:RELIANCE-EQ", "NSE:TCS-EQ", "NSE:HDFCBANK-EQ", "NSE:INFY-EQ", "NSE:ICICIBANK-EQ"]
+    n = record_ticks(syms, out, dur)
+    print(f"Captured {n} ticks to {out}")
     return 0
 
 
@@ -696,22 +784,19 @@ def main() -> int:
         level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
     )
     if len(sys.argv) < 2:
-        print("usage: python fyers_client.py {auth|validate|totp|ticks|bars} [--force] [--manual]")
+        print("usage: python fyers_client.py {auth|validate|ticks|bars|record} [--force]")
         return 1
     cmd = sys.argv[1]
     if cmd == "auth":
-        return _cli_auth(
-            force="--force" in sys.argv,
-            manual="--manual" in sys.argv,
-        )
+        return _cli_auth(force="--force" in sys.argv)
     if cmd == "validate":
         return _cli_validate()
-    if cmd == "totp":
-        return _cli_totp()
     if cmd == "ticks":
         return _cli_ticks()
     if cmd == "bars":
         return _cli_bars()
+    if cmd == "record":
+        return _cli_record(sys.argv)
     print(f"unknown command: {cmd}")
     return 1
 
