@@ -4,8 +4,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import filings
 import suppression
+from data import filings
 
 from . import market_data
 from .config import settings

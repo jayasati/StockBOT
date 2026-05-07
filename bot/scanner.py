@@ -5,8 +5,8 @@ import logging
 
 import pandas as pd
 
-import filings
 import suppression
+from data import filings
 
 from . import market_data
 from .config import settings
