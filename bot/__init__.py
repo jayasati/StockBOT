@@ -1,7 +1,7 @@
 """Stock alert bot package.
 
-Re-exports the public surface that older callers (backtest.py, swing_alert.py,
-swing_backtest.py) reach for via ``bot.X``. The implementation is split across
+Re-exports the public surface that other callers (``backtest.py``, the
+``swing/`` package) reach for via ``bot.X``. The implementation is split across
 config / watchlist / storage / indicators / scoring / notifier / schedule /
 market_data / scanner / runner; this module is the back-compat seam."""
 from .config import DB_PATH, IST, Settings, settings

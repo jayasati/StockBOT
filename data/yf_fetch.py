@@ -1,9 +1,9 @@
 """Unified yfinance daily-batch fetcher with optional parquet cache.
 
 Replaces four near-identical implementations that used to live in
-``bot/market_data.py``, ``backtest.py``, ``swing_backtest.py``, and
-``swing_alert.py``. Live path passes ``cache_path=None``; backtest replays
-pass a parquet path so subsequent runs skip the network call.
+``bot/market_data.py``, ``backtest.py``, and the swing module. Live path
+passes ``cache_path=None``; backtest replays pass a parquet path so
+subsequent runs skip the network call.
 """
 from __future__ import annotations
 
