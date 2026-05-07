@@ -22,7 +22,7 @@ log = logging.getLogger("swing")
 
 def _daily_cache_path(period_days: int) -> Path:
     """Separate cache file per period so changing --years doesn't return
-    stale data. The 186-day default re-uses backtest.py's cache file."""
+    stale data. The 186-day default re-uses the backtest module's cache file."""
     if period_days == 186:
         return DAILY_CACHE
     return CACHE_DIR / f"daily_{period_days}d.parquet"

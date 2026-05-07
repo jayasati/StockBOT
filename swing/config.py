@@ -10,7 +10,7 @@ IST = ZoneInfo("Asia/Kolkata")
 
 NIFTY_TICKER = "^NSEI"
 NIFTY_CACHE = CACHE_DIR / "nifty_daily.parquet"
-RESULTS_CSV = Path("swing_results.csv")
+RESULTS_CSV = Path("results/swing.csv")
 
 # ---------------------------------------------------------------------------
 # Signal parameters

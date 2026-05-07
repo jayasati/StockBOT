@@ -126,5 +126,6 @@ def save_csv(alerts: list[SwingAlert], path: Path) -> None:
     if not alerts:
         log.warning("No alerts to save.")
         return
+    path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame([asdict(a) for a in alerts]).to_csv(path, index=False)
     log.info("Saved %d alerts to %s", len(alerts), path)

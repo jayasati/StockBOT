@@ -34,7 +34,7 @@ def score_stock(
 ) -> StockSignals:
     """
     Composite microstructure score (0-100). Weights tuned from a 60-day
-    NSE backtest (see backtest.py — 4796 alerts).
+    NSE backtest (see ``python -m backtest --sweep`` — 4796 alerts).
 
     Positive components:
       - Volume ratio vs 10-day expected (max 40 pts)  ← only +lift signal

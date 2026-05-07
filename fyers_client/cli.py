@@ -11,6 +11,7 @@ import pandas as pd
 from .auth import authenticate
 from .bars import TICK_STORE
 from .creds import load_creds
+from .logging import fyers_log_path
 from .record import record_ticks
 from .token_cache import TOKEN_CACHE
 from .websocket import start_data_socket
@@ -42,7 +43,7 @@ def _cli_validate() -> int:
         return 2
     from fyers_apiv3 import fyersModel
     fyers = fyersModel.FyersModel(
-        client_id=creds.app_id, token=token, log_path=""
+        client_id=creds.app_id, token=token, log_path=fyers_log_path()
     )
     profile = fyers.get_profile()
     print(json.dumps(profile, indent=2))

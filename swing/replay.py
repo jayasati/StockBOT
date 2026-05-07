@@ -17,8 +17,8 @@ Trade convention:
              after seeing T's bar.
     Exits  = close of T+1, T+3, T+5  (1-day, 3-day, 5-day horizons)
 
-Reuses the daily parquet cache produced by ``backtest.py``. Only NIFTY data
-is fetched fresh (one extra HTTP call, ~0.5s).
+Reuses the daily parquet cache produced by ``python -m backtest``. Only
+NIFTY data is fetched fresh (one extra HTTP call, ~0.5s).
 
 CLI:
     python -m swing.replay                # regime ON and OFF, side-by-side

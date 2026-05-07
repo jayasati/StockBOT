@@ -10,6 +10,7 @@ from typing import Callable
 
 from .auth import authenticate
 from .creds import load_creds
+from .logging import fyers_log_path
 
 log = logging.getLogger("alertbot.fyers")
 
@@ -50,7 +51,7 @@ def start_data_socket(
 
     state["ws"] = data_ws.FyersDataSocket(
         access_token=f"{creds.app_id}:{token}",
-        log_path="",
+        log_path=fyers_log_path(),
         litemode=False,
         write_to_file=False,
         reconnect=reconnect_in_sdk,

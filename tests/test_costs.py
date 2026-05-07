@@ -10,7 +10,7 @@ from datetime import time, datetime
 
 import pytest
 
-import costs as C
+from trading import costs as C
 
 
 NOTIONAL = 159_320.0   # 56 × ₹2,845 — §1 sample card

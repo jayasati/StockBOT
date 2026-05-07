@@ -16,6 +16,7 @@ from bot.schedule import in_session
 
 from .auth import authenticate
 from .creds import FyersCreds, load_creds
+from .logging import fyers_log_path
 from .token_cache import TOKEN_CACHE
 from .websocket import TickHandler
 
@@ -106,7 +107,7 @@ class LiveFeed:
 
         ws = data_ws.FyersDataSocket(
             access_token=f"{self._creds.app_id}:{self._access_token}",
-            log_path="",
+            log_path=fyers_log_path(),
             litemode=False,
             write_to_file=False,
             reconnect=False,    # we own the policy

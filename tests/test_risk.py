@@ -7,7 +7,7 @@ disagrees with what the bot actually intends — a silent sizing bug.
 
 import pytest
 
-import risk as R
+from trading import risk as R
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,9 @@
 """Indicators used by score_stock: RSI, session VWAP, volume ratio,
 breakout/pullback detection, and EMA-extension penalty input.
 
-Kept side-effect-free (apart from the wall-clock read in compute_volume_ratio,
-which the backtest monkey-patches at runtime — see backtest.py)."""
+The wall-clock read in compute_volume_ratio is parameterised — backtest
+replay passes ``as_of=<bar timestamp>`` so the session-elapsed fraction is
+deterministic; live path leaves it None."""
 from __future__ import annotations
 
 from datetime import datetime, time
