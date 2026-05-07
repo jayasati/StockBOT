@@ -14,6 +14,9 @@ venv/
 # Fyers cached access token (sensitive — would let anyone read it trade your account)
 .fyers_token.json
 
+# Single-instance PID lock (written at bot start, removed on clean shutdown)
+.bot.pid
+
 # Logs
 *.log
 

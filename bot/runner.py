@@ -7,6 +7,7 @@ import logging
 from . import market_data
 from .config import settings
 from .db import init_db
+from .instance_lock import single_instance
 from .notifier import Telegram
 from .scanner import scan_once
 from .schedule import is_market_open, seconds_until_market_open
@@ -54,4 +55,5 @@ def run() -> None:
         print("Copy .env.example to .env and fill in your credentials.")
         print("See README.md for setup instructions.")
         raise SystemExit(1)
-    asyncio.run(main())
+    with single_instance():
+        asyncio.run(main())

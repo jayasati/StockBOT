@@ -28,7 +28,15 @@ def _load_watchlist() -> list[str]:
             sym = (row.get("Symbol") or "").strip()
             if sym:
                 symbols.append(f"{sym}.NS")
-    return symbols
+    # Dedupe while preserving order — a duplicated CSV row would otherwise
+    # cause the same symbol to be scored (and alerted on) twice per scan.
+    deduped = list(dict.fromkeys(symbols))
+    if len(deduped) != len(symbols):
+        log.warning(
+            "Watchlist CSV had %d duplicate symbols; using %d unique entries",
+            len(symbols) - len(deduped), len(deduped),
+        )
+    return deduped
 
 
 WATCHLIST = _load_watchlist()

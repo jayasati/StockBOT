@@ -65,8 +65,13 @@ async def scan_once(telegram: Telegram) -> None:
 
     sent = 0
     for s in candidates[: settings.max_alerts_per_scan]:
-        await telegram.send(format_alert(s))
+        # Record BEFORE the Telegram call so a concurrent scan (e.g. a second
+        # bot process) sees the cooldown row and skips the duplicate. If
+        # Telegram fails, the alert is logged and the row stays — the user
+        # won't get re-alerted within the cooldown window, which is the
+        # behaviour we want (better than spamming on retries).
         record_alert(s.symbol, s.score, ", ".join(s.reasons), s.price)
+        await telegram.send(format_alert(s))
         log.info("Alerted: %s score=%d reasons=%s", s.symbol, s.score, s.reasons)
         sent += 1
 
