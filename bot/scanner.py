@@ -5,10 +5,9 @@ import logging
 
 import pandas as pd
 
-import suppression
 from data import filings
 
-from . import market_data
+from . import market_data, suppression
 from .config import settings
 from .notifier import Telegram, format_alert
 from .scoring import StockSignals, score_stock

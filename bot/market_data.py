@@ -13,9 +13,9 @@ import pandas as pd
 import yfinance as yf
 
 import fyers_client
-import suppression
 from data import realtime_feed
 
+from . import suppression
 from .config import IST
 from .watchlist import WATCHLIST
 
