@@ -446,3 +446,16 @@ def seed_from_yfinance(symbol: str, df_5m: pd.DataFrame) -> int:
 
 def stats() -> dict:
     return get_aggregator().stats()
+
+
+def is_live_feed_connected() -> bool:
+    """True if a LiveFeed has been started and reports its websocket up.
+
+    Returns False if no feed has been subscribed yet, the feed has been
+    stopped, or the underlying websocket is between connection attempts."""
+    if _LIVE_FEED is None:
+        return False
+    try:
+        return _LIVE_FEED.is_connected()
+    except Exception:
+        return False

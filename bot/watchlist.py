@@ -10,7 +10,7 @@ import csv
 import logging
 from pathlib import Path
 
-log = logging.getLogger("alertbot")
+log = logging.getLogger("alertbot.watchlist")
 
 WATCHLIST_CSV = Path("ind_nifty500list.csv")
 

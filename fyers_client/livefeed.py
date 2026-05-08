@@ -81,6 +81,16 @@ class LiveFeed:
             except Exception:
                 pass
 
+    def is_connected(self) -> bool:
+        """True if a websocket is currently up and the loop is running.
+
+        Used by the health monitor's ``fyers_websocket_connected`` check.
+        Best-effort: a brief reconnect window between ``_on_close`` and
+        ``_reconnect_loop`` may report False even though service resumes
+        within seconds — that's acceptable noise for a health probe."""
+        with self._lock:
+            return self._running and self._ws is not None
+
     def add_symbols(self, symbols: list[str]) -> None:
         new = [s for s in symbols if s not in self._symbols]
         if not new:

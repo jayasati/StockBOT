@@ -14,7 +14,7 @@ from .scoring import StockSignals, score_stock
 from .storage import record_alert
 from .watchlist import WATCHLIST
 
-log = logging.getLogger("alertbot")
+log = logging.getLogger("alertbot.scan")
 
 
 async def scan_once(telegram: Telegram) -> None:

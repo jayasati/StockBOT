@@ -50,7 +50,23 @@ CREATE TABLE IF NOT EXISTS risk_flags (
 CREATE INDEX IF NOT EXISTS idx_risk_flags_type ON risk_flags(flag_type);
 """
 
-MASTER_SCHEMA = ALERTS_SCHEMA + FILINGS_SCHEMA + RISK_FLAGS_SCHEMA
+# health_log — per-tick result of every health check; consumed by the
+# /status command and by FailureTracker for consecutive-failure detection.
+HEALTH_SCHEMA = """
+CREATE TABLE IF NOT EXISTS health_log (
+    ts          TEXT NOT NULL,
+    check_name  TEXT NOT NULL,
+    ok          INTEGER NOT NULL,
+    latency_ms  INTEGER,
+    detail      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_health_check_ts
+    ON health_log(check_name, ts DESC);
+"""
+
+MASTER_SCHEMA = (
+    ALERTS_SCHEMA + FILINGS_SCHEMA + RISK_FLAGS_SCHEMA + HEALTH_SCHEMA
+)
 
 
 def init_db() -> None:

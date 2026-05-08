@@ -7,7 +7,7 @@ import httpx
 
 from .scoring import StockSignals
 
-log = logging.getLogger("alertbot")
+log = logging.getLogger("alertbot.notifier")
 
 
 class Telegram:

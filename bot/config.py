@@ -1,7 +1,10 @@
-"""Configuration: Settings dataclass + env loading + shared constants."""
+"""Configuration: Settings dataclass + env loading + shared constants.
+
+Logging configuration lives in :mod:`bot.logging` (rotating file handler,
+per-module names). Importing this module no longer touches logging — call
+``bot.logging.setup_logging()`` from your entry point."""
 from __future__ import annotations
 
-import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,14 +13,6 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 load_dotenv()
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-# Suppress httpx INFO-level logs — they leak the bot token in request URLs
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 IST = ZoneInfo("Asia/Kolkata")
 DB_PATH = Path("alerts.db")

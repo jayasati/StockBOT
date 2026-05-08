@@ -19,7 +19,7 @@ from . import suppression
 from .config import IST
 from .watchlist import WATCHLIST
 
-log = logging.getLogger("alertbot")
+log = logging.getLogger("alertbot.market_data")
 
 # Daily history changes once per day, so we cache it instead of re-fetching
 # 130 times every scan. The cache is refreshed at bot start and once per day.
