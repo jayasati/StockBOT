@@ -1,6 +1,16 @@
-"""Main loop: market-hours-aware scheduler around scan_once.
+"""Main loop: market-hours-aware scheduler.
 
-Two background tasks run concurrently with the scan loop:
+Two paths feed alerts:
+
+* **Event-driven** — ``BarAggregator.on_bar_complete`` is invoked from the
+  Fyers WebSocket thread the moment a 5-min bar closes. We bounce the
+  symbol onto an ``asyncio.Queue`` via ``call_soon_threadsafe`` and a
+  consumer task scores it within ~seconds of the bar's close tick.
+* **Periodic** — ``scanner.scan_once`` runs every ``SCAN_INTERVAL_SECONDS``.
+  Refreshes filings / ASM / daily-cache, and serves as a safety net for
+  symbols whose bar events were missed (e.g. during a websocket reconnect).
+
+Background tasks running concurrently with the scan loop:
   * ``health.MonitorLoop``  — periodic health checks + alerter
   * ``bot.commands.listen`` — Telegram getUpdates dispatcher (/status)"""
 from __future__ import annotations
@@ -9,6 +19,7 @@ import asyncio
 import logging
 
 import fyers_client
+from data import filings, realtime_feed
 
 from health import MonitorLoop, format_status
 
@@ -18,11 +29,28 @@ from .db import init_db
 from .instance_lock import single_instance
 from .logging import setup_logging
 from .notifier import Telegram
-from .scanner import scan_once
+from .scanner import scan_once, scan_symbol
 from .schedule import is_market_open, seconds_until_market_open
 from .watchlist import WATCHLIST
 
 log = logging.getLogger("alertbot.runner")
+
+
+async def _bar_event_consumer(
+    telegram: Telegram, queue: asyncio.Queue[str]
+) -> None:
+    """Drain bar-complete events; score the symbol; dispatch if it qualifies.
+
+    Runs forever until cancelled. Failures on one symbol must not stop the
+    consumer — log and continue."""
+    while True:
+        fy_symbol = await queue.get()
+        try:
+            yf_symbol = fyers_client.to_yf(fy_symbol)
+            fundamentals = filings.recent_high_priority(60)
+            await scan_symbol(telegram, yf_symbol, fundamentals)
+        except Exception:
+            log.exception("Event-driven scan failed for %s", fy_symbol)
 
 
 async def main() -> None:
@@ -63,6 +91,29 @@ async def main() -> None:
         name="tg-commands",
     )
 
+    # Event-driven path: the Fyers WebSocket thread invokes the aggregator's
+    # on_bar_complete callback from off-loop. We can't await Telegram from
+    # there, so we bounce the symbol into an asyncio.Queue and drain it
+    # on-loop. call_soon_threadsafe is the canonical thread→loop hop.
+    bar_event_queue: asyncio.Queue[str] = asyncio.Queue()
+    main_loop = asyncio.get_running_loop()
+
+    def _on_bar_complete(bar) -> None:
+        try:
+            main_loop.call_soon_threadsafe(
+                bar_event_queue.put_nowait, bar.symbol
+            )
+        except RuntimeError:
+            # Loop already closed during shutdown — fine to drop.
+            pass
+
+    realtime_feed.get_aggregator().on_bar_complete = _on_bar_complete
+
+    consumer_task = asyncio.create_task(
+        _bar_event_consumer(telegram, bar_event_queue),
+        name="bar-event-consumer",
+    )
+
     try:
         while True:
             try:
@@ -82,10 +133,14 @@ async def main() -> None:
     finally:
         monitor.stop()
         commands.request_stop()
-        # Give both tasks a moment to wind down cleanly.
+        consumer_task.cancel()
+        # Give all three a moment to wind down cleanly.
         try:
             await asyncio.wait_for(
-                asyncio.gather(monitor_task, commands_task, return_exceptions=True),
+                asyncio.gather(
+                    monitor_task, commands_task, consumer_task,
+                    return_exceptions=True,
+                ),
                 timeout=5,
             )
         except asyncio.TimeoutError:

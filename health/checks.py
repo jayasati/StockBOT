@@ -123,20 +123,18 @@ def bars_fresh(
         with sqlite3.connect(db_path, timeout=5) as conn:
             placeholders = ",".join("?" * len(symbols))
             row = conn.execute(
-                f"SELECT MAX(ts_open) FROM bars_5m WHERE symbol IN ({placeholders})",
+                f"SELECT MAX(ts) FROM bars_5m WHERE symbol IN ({placeholders})",
                 symbols,
             ).fetchone()
     except sqlite3.Error as e:
         return CheckResult(False, f"sqlite error: {e}", _ms(start))
-    max_ts_str = row[0] if row else None
-    if max_ts_str is None:
+    max_ts_ms = row[0] if row else None
+    if max_ts_ms is None:
         return CheckResult(False, "no bars in DB for any tracked symbol", _ms(start))
     try:
-        max_ts = datetime.fromisoformat(max_ts_str)
-    except ValueError as e:
-        return CheckResult(False, f"unparseable ts {max_ts_str!r}: {e}", _ms(start))
-    if max_ts.tzinfo is None:
-        max_ts = max_ts.replace(tzinfo=IST)
+        max_ts = datetime.fromtimestamp(int(max_ts_ms) / 1000, tz=IST)
+    except (TypeError, ValueError, OSError) as e:
+        return CheckResult(False, f"unparseable ts {max_ts_ms!r}: {e}", _ms(start))
     age_s = (datetime.now(IST) - max_ts).total_seconds()
     if age_s <= max_age_s:
         return CheckResult(

@@ -46,7 +46,15 @@ def aggregator(tmp_path):
 
 
 def _expected_per_slot(ticks: list[dict]) -> dict[tuple[str, pd.Timestamp], dict]:
-    """Compute ground-truth OHLCV from the raw fixture, grouped by (symbol, slot)."""
+    """Compute ground-truth OHLCV from the raw fixture, grouped by (symbol, slot).
+
+    Volume is the delta of ``vol_traded_today`` from the first tick of the
+    slot to the first tick of the next slot for the same symbol — the same
+    semantics ``BarAggregator`` uses. The final (in-progress, then flushed)
+    slot keeps its running delta up to its last tick.
+    """
+    # 1) First pass: collect per-symbol slot-ordered ticks with their vol_today.
+    by_symbol_slot: dict[str, list[tuple[pd.Timestamp, float]]] = {}
     expected: dict[tuple[str, pd.Timestamp], dict] = {}
     for t in ticks:
         if t.get("type") != "sf":
@@ -55,20 +63,37 @@ def _expected_per_slot(ticks: list[dict]) -> dict[tuple[str, pd.Timestamp], dict
         slot = _floor_to_5m(ts_utc.tz_convert(IST))
         if not _is_in_session(slot):
             continue
-        key = (t["symbol"], slot)
-        bucket = expected.get(key)
+        sym = t["symbol"]
+        key = (sym, slot)
         ltp = float(t["ltp"])
-        ltq = float(t["ltq"])
+        vol = float(t.get("vol_traded_today") or 0.0)
+        bucket = expected.get(key)
         if bucket is None:
             expected[key] = {
                 "open": ltp, "high": ltp, "low": ltp, "close": ltp,
-                "volume": ltq,
+                "_start_vol": vol, "_last_vol": vol,
             }
+            by_symbol_slot.setdefault(sym, []).append((slot, vol))
         else:
             bucket["high"] = max(bucket["high"], ltp)
             bucket["low"] = min(bucket["low"], ltp)
             bucket["close"] = ltp
-            bucket["volume"] += ltq
+            bucket["_last_vol"] = vol
+
+    # 2) Volume per bar = vol at first tick of next slot − vol at first tick
+    #    of this slot. The very last slot has no successor, so its volume is
+    #    derived from its own last observed tick (matches what ``flush()``
+    #    does in the aggregator).
+    for sym, slots in by_symbol_slot.items():
+        for i, (slot, start_vol) in enumerate(slots):
+            bucket = expected[(sym, slot)]
+            if i + 1 < len(slots):
+                next_start_vol = slots[i + 1][1]
+                bucket["volume"] = max(0.0, next_start_vol - start_vol)
+            else:
+                bucket["volume"] = max(0.0, bucket["_last_vol"] - start_vol)
+            bucket.pop("_start_vol", None)
+            bucket.pop("_last_vol", None)
     return expected
 
 
@@ -130,14 +155,20 @@ def test_dataframe_index_is_tz_aware_ist(aggregator, replay_ticks):
 # Bar boundary correctness
 # ---------------------------------------------------------------------------
 
-def _make_tick(symbol: str, ltp: float, ltq: int, ts_ist: datetime) -> dict:
+def _make_tick(
+    symbol: str,
+    ltp: float,
+    ltq: int,
+    ts_ist: datetime,
+    vol_traded_today: int = 0,
+) -> dict:
     return {
         "type": "sf",
         "symbol": symbol,
         "ltp": ltp,
         "ltq": ltq,
         "last_traded_time": int(ts_ist.timestamp()),
-        "vol_traded_today": 0,
+        "vol_traded_today": vol_traded_today,
     }
 
 
@@ -164,12 +195,16 @@ def test_first_session_tick_starts_first_bar(aggregator):
 
 def test_slot_boundary_closes_previous_and_opens_next(aggregator):
     """A tick at 09:20:00 must close the 09:15 bar (now persisted) and open
-    a fresh 09:20 bar."""
+    a fresh 09:20 bar.
+
+    Volume comes from ``vol_traded_today`` deltas: the closed 09:15 bar's
+    volume is the cum-vol at the first 09:20 tick minus the cum-vol at the
+    first 09:15 tick (i.e. 1000 → 1300 = 300)."""
     sym = "NSE:RELIANCE-EQ"
-    aggregator.on_tick(_make_tick(sym, 2500.0, 100, datetime(2026, 5, 4, 9, 15, 0, tzinfo=IST)))
-    aggregator.on_tick(_make_tick(sym, 2510.0, 100, datetime(2026, 5, 4, 9, 17, 30, tzinfo=IST)))
-    aggregator.on_tick(_make_tick(sym, 2505.0, 100, datetime(2026, 5, 4, 9, 19, 45, tzinfo=IST)))
-    aggregator.on_tick(_make_tick(sym, 2520.0, 100, datetime(2026, 5, 4, 9, 20, 0, tzinfo=IST)))
+    aggregator.on_tick(_make_tick(sym, 2500.0, 100, datetime(2026, 5, 4, 9, 15, 0, tzinfo=IST), vol_traded_today=1000))
+    aggregator.on_tick(_make_tick(sym, 2510.0, 100, datetime(2026, 5, 4, 9, 17, 30, tzinfo=IST), vol_traded_today=1100))
+    aggregator.on_tick(_make_tick(sym, 2505.0, 100, datetime(2026, 5, 4, 9, 19, 45, tzinfo=IST), vol_traded_today=1200))
+    aggregator.on_tick(_make_tick(sym, 2520.0, 100, datetime(2026, 5, 4, 9, 20, 0, tzinfo=IST), vol_traded_today=1300))
 
     df = aggregator.get_5m_bars(sym, n=10)
     assert len(df) == 1, "the 09:15 bar should be completed and persisted"

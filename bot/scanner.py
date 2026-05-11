@@ -1,4 +1,14 @@
-"""Per-tick scan: refresh caches, fetch intraday data, score, dispatch."""
+"""Per-tick scan: refresh caches, fetch intraday data, score, dispatch.
+
+Two callers:
+  * ``scan_once`` — periodic batch scan over the whole watchlist (used by the
+    runner loop). Also refreshes filings / ASM / daily-cache.
+  * ``scan_symbol`` — single-symbol scan, called from the bar-event consumer
+    when a 5-min bar closes for that symbol. Sub-second latency from bar
+    close to Telegram message.
+
+Both paths share ``_evaluate_symbol``, which scores + applies suppression so
+the alert criterion stays identical."""
 from __future__ import annotations
 
 import logging
@@ -17,7 +27,69 @@ from .watchlist import WATCHLIST
 log = logging.getLogger("alertbot.scan")
 
 
+def _evaluate_symbol(
+    symbol: str,
+    intraday: pd.DataFrame,
+    daily: pd.DataFrame,
+    fundamentals: dict[str, str],
+) -> StockSignals | None:
+    """Score one symbol; apply filing bonus; return signals only if it
+    crosses the configured threshold *and* is not suppressed. Returns None
+    otherwise. Pure over already-fetched data."""
+    if daily.empty:
+        return None
+    signals = score_stock(symbol, intraday, daily)
+    if symbol in fundamentals:
+        # Binary BSE filing in the last 60 minutes: an earnings beat / order
+        # win / acquisition tends to drive several ATRs of move, dwarfing
+        # microstructure signals.
+        signals.score = min(100, signals.score + 30)
+        signals.filing_title = fundamentals[symbol]
+        signals.reasons.append("📰 filing")
+    log.debug("%s: score=%d %s", symbol, signals.score, signals.reasons)
+    if signals.score < settings.composite_threshold:
+        return None
+    blocked, reason = suppression.is_suppressed(symbol, settings.cooldown_minutes)
+    if blocked:
+        log.info("Suppressed %s: %s", symbol, reason)
+        return None
+    return signals
+
+
+async def _dispatch(telegram: Telegram, signals: StockSignals) -> None:
+    """Persist + Telegram. Record_alert lands first so a concurrent path
+    (e.g. periodic scan and bar-event firing back-to-back) sees the
+    cooldown row and skips the duplicate."""
+    record_alert(signals.symbol, signals.score, ", ".join(signals.reasons), signals.price)
+    await telegram.send(format_alert(signals))
+    log.info("Alerted: %s score=%d reasons=%s",
+             signals.symbol, signals.score, signals.reasons)
+
+
+async def scan_symbol(
+    telegram: Telegram, symbol: str, fundamentals: dict[str, str]
+) -> None:
+    """Event-driven scan for a single symbol. Called from the bar-event
+    consumer when a 5-min bar closes. No max-alerts cap — alerts arrive
+    one-at-a-time as bars complete, so spam control is handled by the
+    cooldown row alone."""
+    if symbol not in WATCHLIST:
+        return
+    intraday_data = market_data.fetch_intraday([symbol])
+    if symbol not in intraday_data:
+        return
+    daily = market_data._daily_cache.get(symbol, pd.DataFrame())
+    signals = _evaluate_symbol(symbol, intraday_data[symbol], daily, fundamentals)
+    if signals is None:
+        return
+    await _dispatch(telegram, signals)
+
+
 async def scan_once(telegram: Telegram) -> None:
+    """Periodic batch scan: refresh daily/ASM/filings, score every symbol,
+    rank by score, dispatch up to ``max_alerts_per_scan``. Acts as a safety
+    net for symbols whose bar-complete events were missed (e.g. during a
+    websocket reconnect)."""
     market_data.refresh_daily_cache_if_stale()
     await market_data.refresh_asm_gsm_if_stale()
 
@@ -36,43 +108,16 @@ async def scan_once(telegram: Telegram) -> None:
     for symbol in WATCHLIST:
         if symbol not in intraday_data:
             continue
-        intraday = intraday_data[symbol]
         daily = market_data._daily_cache.get(symbol, pd.DataFrame())
-        if daily.empty:
-            continue
-        signals = score_stock(symbol, intraday, daily)
-
-        # Fundamental catalyst bonus: binary_high BSE filing in last 60 min.
-        # +30 reflects that an earnings beat / order win / acquisition tends
-        # to drive several ATRs of move, dwarfing microstructure signals.
-        if symbol in fundamentals:
-            signals.score = min(100, signals.score + 30)
-            signals.filing_title = fundamentals[symbol]
-            signals.reasons.append("📰 filing")
-
-        log.debug("%s: score=%d %s", symbol, signals.score, signals.reasons)
-
-        if signals.score >= settings.composite_threshold:
-            blocked, reason = suppression.is_suppressed(
-                symbol, settings.cooldown_minutes
-            )
-            if blocked:
-                log.info("Suppressed %s: %s", symbol, reason)
-                continue
+        signals = _evaluate_symbol(symbol, intraday_data[symbol], daily, fundamentals)
+        if signals is not None:
             candidates.append(signals)
 
     candidates.sort(key=lambda s: -s.score)
 
     sent = 0
     for s in candidates[: settings.max_alerts_per_scan]:
-        # Record BEFORE the Telegram call so a concurrent scan (e.g. a second
-        # bot process) sees the cooldown row and skips the duplicate. If
-        # Telegram fails, the alert is logged and the row stays — the user
-        # won't get re-alerted within the cooldown window, which is the
-        # behaviour we want (better than spamming on retries).
-        record_alert(s.symbol, s.score, ", ".join(s.reasons), s.price)
-        await telegram.send(format_alert(s))
-        log.info("Alerted: %s score=%d reasons=%s", s.symbol, s.score, s.reasons)
+        await _dispatch(telegram, s)
         sent += 1
 
     log.info(

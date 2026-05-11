@@ -19,10 +19,18 @@ Returned DataFrames have:
 
 This matches features.py exactly so the same DataFrame is consumed by both.
 
-Bars are persisted to ``bars_5m`` in alerts.db keyed on (symbol, ts_open).
-On reconnect or process restart, completed bars survive — only the
-in-progress bar is lost. ``get_5m_bars`` falls back to SQLite when the
-in-memory cache is cold.
+Bars are persisted to ``bars_5m`` in alerts.db keyed on (symbol, ts) where
+``ts`` is the bar's open time as UTC epoch milliseconds. On reconnect or
+process restart, completed bars survive — only the in-progress bar is
+lost. ``get_5m_bars`` falls back to SQLite when the in-memory cache is
+cold.
+
+Per-bar volume is computed from Fyers' ``vol_traded_today`` cumulative
+day-volume field (delta between the first tick observed in the bar and
+the first tick observed in the next bar). The naive alternative — summing
+``ltq`` per snapshot — silently under-counts by ~5–10× because the
+``SymbolUpdate`` channel publishes throttled snapshots, not every print,
+and only the most recent trade's quantity survives in ``ltq``.
 """
 
 from __future__ import annotations
@@ -53,16 +61,21 @@ DEFAULT_DB_PATH = Path("alerts.db")
 MAX_BARS_PER_SYMBOL = 200
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS bars_5m (
-    symbol  TEXT NOT NULL,
-    ts_open TEXT NOT NULL,   -- ISO-8601 IST, tz-aware
-    o       REAL NOT NULL,
-    h       REAL NOT NULL,
-    l       REAL NOT NULL,
-    c       REAL NOT NULL,
-    v       REAL NOT NULL,
-    PRIMARY KEY (symbol, ts_open)
+    symbol  TEXT    NOT NULL,
+    ts      INTEGER NOT NULL,   -- UTC epoch milliseconds (bar open time)
+    open    REAL    NOT NULL,
+    high    REAL    NOT NULL,
+    low     REAL    NOT NULL,
+    close   REAL    NOT NULL,
+    volume  REAL    NOT NULL,
+    PRIMARY KEY (symbol, ts)
 );
 """
+
+
+def _ts_open_to_epoch_ms(ts_open: pd.Timestamp) -> int:
+    """Bar open time → UTC epoch milliseconds (the canonical on-disk form)."""
+    return int(ts_open.value // 1_000_000)
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +137,7 @@ class BarAggregator:
         self._lock = threading.Lock()
         self._completed: dict[str, deque[Bar]] = {}
         self._current: dict[str, Bar] = {}
+        self._bar_start_vol: dict[str, float] = {}
         self._latest_tick_ts: dict[str, datetime] = {}
         self._tick_count = 0
         self._dropped_out_of_session = 0
@@ -142,10 +156,11 @@ class BarAggregator:
             with sqlite3.connect(self.db_path, timeout=5) as conn:
                 conn.execute(
                     "INSERT OR IGNORE INTO bars_5m "
-                    "(symbol, ts_open, o, h, l, c, v) VALUES (?,?,?,?,?,?,?)",
+                    "(symbol, ts, open, high, low, close, volume) "
+                    "VALUES (?,?,?,?,?,?,?)",
                     (
                         bar.symbol,
-                        bar.ts_open.isoformat(),
+                        _ts_open_to_epoch_ms(bar.ts_open),
                         bar.open, bar.high, bar.low, bar.close, bar.volume,
                     ),
                 )
@@ -155,18 +170,23 @@ class BarAggregator:
     # -- Tick ingestion --------------------------------------------------
 
     def on_tick(self, msg: dict) -> None:
-        """Process a single Fyers tick. Lifecycle frames are ignored."""
+        """Process a single Fyers tick. Lifecycle frames are ignored.
+
+        Per-bar volume is the delta of ``vol_traded_today`` between the first
+        tick of this bar and the first tick of the next bar. ``ltq`` is not
+        used: it captures only the most recent trade, while snapshots are
+        throttled, so summing ltq under-counts by ~5–10×.
+        """
         if msg.get("type") != "sf":
             return
         symbol = msg.get("symbol")
         ltp = msg.get("ltp")
-        ltq = msg.get("ltq") or msg.get("last_traded_qty") or 0
         ts_epoch = msg.get("last_traded_time")
         if not symbol or ltp is None or ts_epoch is None:
             return
 
         ltp = float(ltp)
-        ltq = float(ltq)
+        vol_today = float(msg.get("vol_traded_today") or 0.0)
         ts_ist = _epoch_to_ist(float(ts_epoch))
         slot = _floor_to_5m(ts_ist)
 
@@ -182,19 +202,29 @@ class BarAggregator:
             cur = self._current.get(symbol)
             if cur is None or cur.ts_open != slot:
                 if cur is not None:
+                    # Close the previous bar. Its volume is the delta from
+                    # its start_vol to *this* tick's vol_traded_today (the
+                    # first tick of the new slot) — that captures every
+                    # trade printed in between.
+                    prev_start = self._bar_start_vol.get(symbol, vol_today)
+                    cur.volume = max(0.0, vol_today - prev_start)
                     self._completed.setdefault(
                         symbol, deque(maxlen=self.max_bars)
                     ).append(cur)
                     emitted = cur
                 self._current[symbol] = Bar(
                     symbol=symbol, ts_open=slot,
-                    open=ltp, high=ltp, low=ltp, close=ltp, volume=ltq,
+                    open=ltp, high=ltp, low=ltp, close=ltp, volume=0.0,
                 )
+                self._bar_start_vol[symbol] = vol_today
             else:
                 cur.high = max(cur.high, ltp)
                 cur.low = min(cur.low, ltp)
                 cur.close = ltp
-                cur.volume += ltq
+                # Clamp guards against a day rollover (vol_today resets to 0)
+                # or an out-of-order snapshot. Without the clamp a transient
+                # negative would corrupt the in-progress bar.
+                cur.volume = max(0.0, vol_today - self._bar_start_vol[symbol])
 
         if emitted is not None:
             self._persist(emitted)
@@ -269,7 +299,7 @@ class BarAggregator:
         db_bars = [
             Bar(
                 symbol=symbol,
-                ts_open=pd.Timestamp(r[0]).tz_convert(IST),
+                ts_open=pd.Timestamp(r[0], unit="ms", tz="UTC").tz_convert(IST),
                 open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5],
             )
             for r in rows
@@ -285,16 +315,16 @@ class BarAggregator:
         with sqlite3.connect(self.db_path, timeout=5) as conn:
             if before_ts is None:
                 cur = conn.execute(
-                    "SELECT ts_open, o, h, l, c, v FROM bars_5m "
-                    "WHERE symbol = ? ORDER BY ts_open DESC LIMIT ?",
+                    "SELECT ts, open, high, low, close, volume FROM bars_5m "
+                    "WHERE symbol = ? ORDER BY ts DESC LIMIT ?",
                     (symbol, n),
                 )
             else:
                 cur = conn.execute(
-                    "SELECT ts_open, o, h, l, c, v FROM bars_5m "
-                    "WHERE symbol = ? AND ts_open < ? "
-                    "ORDER BY ts_open DESC LIMIT ?",
-                    (symbol, before_ts.isoformat(), n),
+                    "SELECT ts, open, high, low, close, volume FROM bars_5m "
+                    "WHERE symbol = ? AND ts < ? "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (symbol, _ts_open_to_epoch_ms(before_ts), n),
                 )
             rows = list(cur.fetchall())
         rows.reverse()  # we want ascending
@@ -324,11 +354,12 @@ class BarAggregator:
     # -- Backfill --------------------------------------------------------
 
     def seed_from_yfinance(self, symbol: str, df_5m: pd.DataFrame) -> int:
-        """Insert yfinance 5-min bars into bars_5m. Idempotent on (symbol, ts_open).
+        """Insert yfinance 5-min bars into bars_5m. Idempotent on (symbol, ts).
 
         yfinance gives tz-aware UTC timestamps with capitalised columns; we
-        normalise to IST + lowercase before persisting. Bars outside the
-        09:15–15:30 IST window are dropped.
+        normalise to IST + lowercase before persisting, and store ``ts`` as
+        UTC epoch milliseconds. Bars outside the 09:15–15:30 IST window are
+        dropped.
         """
         if df_5m is None or df_5m.empty:
             return 0
@@ -349,7 +380,7 @@ class BarAggregator:
             if not _is_in_session(ts):
                 continue
             rows.append((
-                symbol, ts.isoformat(),
+                symbol, _ts_open_to_epoch_ms(ts),
                 float(row.open), float(row.high), float(row.low),
                 float(row.close), float(row.volume),
             ))
@@ -358,7 +389,8 @@ class BarAggregator:
         with sqlite3.connect(self.db_path, timeout=5) as conn:
             conn.executemany(
                 "INSERT OR IGNORE INTO bars_5m "
-                "(symbol, ts_open, o, h, l, c, v) VALUES (?,?,?,?,?,?,?)",
+                "(symbol, ts, open, high, low, close, volume) "
+                "VALUES (?,?,?,?,?,?,?)",
                 rows,
             )
         return len(rows)

@@ -28,12 +28,17 @@ CREATE TABLE IF NOT EXISTS health_log (
 """
 BARS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS bars_5m (
-    symbol  TEXT NOT NULL,
-    ts_open TEXT NOT NULL,
-    o REAL, h REAL, l REAL, c REAL, v REAL,
-    PRIMARY KEY (symbol, ts_open)
+    symbol  TEXT    NOT NULL,
+    ts      INTEGER NOT NULL,
+    open    REAL, high REAL, low REAL, close REAL, volume REAL,
+    PRIMARY KEY (symbol, ts)
 );
 """
+
+
+def _ts_ms(dt: datetime) -> int:
+    """Convert a tz-aware datetime to UTC epoch milliseconds."""
+    return int(dt.timestamp() * 1000)
 
 
 @pytest.fixture
@@ -93,7 +98,7 @@ def test_bars_fresh_recent_bar_passes(tmp_db: Path):
     with sqlite3.connect(tmp_db) as conn:
         conn.execute(
             "INSERT INTO bars_5m VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("NSE:X-EQ", now.isoformat(), 1.0, 1.0, 1.0, 1.0, 100.0),
+            ("NSE:X-EQ", _ts_ms(now), 1.0, 1.0, 1.0, 1.0, 100.0),
         )
     r = bars_fresh(tmp_db, symbols=["NSE:X-EQ"], max_age_s=600)
     assert r.ok, r.detail
@@ -104,7 +109,7 @@ def test_bars_fresh_stale_bar_fails(tmp_db: Path):
     with sqlite3.connect(tmp_db) as conn:
         conn.execute(
             "INSERT INTO bars_5m VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("NSE:X-EQ", stale.isoformat(), 1.0, 1.0, 1.0, 1.0, 100.0),
+            ("NSE:X-EQ", _ts_ms(stale), 1.0, 1.0, 1.0, 1.0, 100.0),
         )
     r = bars_fresh(tmp_db, symbols=["NSE:X-EQ"], max_age_s=360)
     assert not r.ok
@@ -117,11 +122,11 @@ def test_bars_fresh_one_fresh_among_many_passes(tmp_db: Path):
     with sqlite3.connect(tmp_db) as conn:
         conn.execute(
             "INSERT INTO bars_5m VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("STALE.NS", stale.isoformat(), 1, 1, 1, 1, 0),
+            ("STALE.NS", _ts_ms(stale), 1, 1, 1, 1, 0),
         )
         conn.execute(
             "INSERT INTO bars_5m VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("FRESH.NS", now.isoformat(), 1, 1, 1, 1, 0),
+            ("FRESH.NS", _ts_ms(now), 1, 1, 1, 1, 0),
         )
     r = bars_fresh(tmp_db, symbols=["STALE.NS", "FRESH.NS"], max_age_s=300)
     assert r.ok, "ANY fresh symbol = ok"
