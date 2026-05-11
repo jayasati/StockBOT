@@ -263,6 +263,62 @@ def test_completed_bars_survive_process_restart(tmp_path, replay_ticks):
     assert df.iloc[1]["open"] == pytest.approx(2501.5)
 
 
+# ---------------------------------------------------------------------------
+# 1-min bars: parameterized BarAggregator runs alongside the 5m one
+# ---------------------------------------------------------------------------
+
+def test_1m_aggregator_produces_minute_bars(tmp_path):
+    """Same OHLCV contract as 5m, but slot width = 1 minute. Three ticks
+    inside one minute → one bar; a tick in the next minute closes it."""
+    db = tmp_path / "1m.db"
+    a = BarAggregator(db_path=db, bar_width_minutes=1, table_name="bars_1m")
+    sym = "NSE:X-EQ"
+    base = datetime(2026, 5, 4, 11, 30, 0, tzinfo=IST)
+    a.on_tick(_make_tick(sym, 100.0, 0, base, vol_traded_today=1000))
+    a.on_tick(_make_tick(sym, 101.0, 0,
+                         base.replace(second=20), vol_traded_today=1050))
+    a.on_tick(_make_tick(sym, 99.5, 0,
+                         base.replace(second=50), vol_traded_today=1080))
+    # First tick of the next 1-min slot closes the 11:30 bar.
+    a.on_tick(_make_tick(sym, 100.2, 0,
+                         base.replace(minute=31, second=0),
+                         vol_traded_today=1090))
+
+    df = a.get_5m_bars(sym, n=10)  # method name unchanged but reads 1m here
+    assert len(df) == 1
+    bar = df.iloc[0]
+    assert df.index[0].time() == base.time()
+    assert bar["open"] == 100.0
+    assert bar["high"] == 101.0
+    assert bar["low"] == 99.5
+    assert bar["close"] == 99.5
+    # vol_traded_today delta from first-tick-of-this-bar (1000) to first-tick-
+    # of-next-bar (1090) = 90.
+    assert bar["volume"] == 90.0
+
+
+def test_1m_and_5m_use_separate_tables(tmp_path):
+    """Both aggregators on the same DB file must not clobber each other."""
+    db = tmp_path / "both.db"
+    a5 = BarAggregator(db_path=db, bar_width_minutes=5, table_name="bars_5m")
+    a1 = BarAggregator(db_path=db, bar_width_minutes=1, table_name="bars_1m")
+    import sqlite3
+    with sqlite3.connect(db) as conn:
+        rows = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+    assert "bars_5m" in rows
+    assert "bars_1m" in rows
+
+
+def test_bar_width_rejects_unsupported_values(tmp_path):
+    db = tmp_path / "bad.db"
+    with pytest.raises(ValueError):
+        BarAggregator(db_path=db, bar_width_minutes=7)
+    with pytest.raises(ValueError):
+        BarAggregator(db_path=db, bar_width_minutes=5, table_name="bad name")
+
+
 def test_seed_from_yfinance_inserts_session_bars(tmp_path):
     """yfinance backfill goes into the same bars_5m table; out-of-session
     rows (e.g. an aftermarket print) are dropped."""

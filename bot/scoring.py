@@ -37,7 +37,10 @@ def score_stock(
     NSE backtest (see ``python -m backtest --sweep`` — 4796 alerts).
 
     Positive components:
-      - Volume ratio vs 10-day expected (max 40 pts)  ← only +lift signal
+      - Volume ratio vs 10-day expected (max 50 pts)  ← only +lift signal
+        Extreme tier (>=5x) bypasses other-signal confirmation: a single
+        bar with 5x+ volume is a strong enough one-shot tell that we want
+        the alert to fire even without RSI/VWAP/pullback agreement.
       - Pullback to 20-day high made in last 5 sessions (25 pts)
       - RSI in momentum zone 60-70 (max 15 pts)       ← was anti-predictive at 25
       - Above session VWAP (15 pts)
@@ -71,8 +74,15 @@ def score_stock(
     score = 0
     reasons: list[str] = []
 
-    # Volume ratio — only component with positive lift in backtest
-    if vol_ratio >= 3.0:
+    # Volume ratio — only component with positive lift in backtest.
+    # The 5x tier is a one-shot trigger (+50 puts a clean bar at score 65
+    # by itself + VWAP, crossing threshold 60 without needing pullback or
+    # RSI agreement). This catches PVR-style intra-bar spikes that the
+    # composite would otherwise wait one more bar to confirm.
+    if vol_ratio >= 5.0:
+        score += 50
+        reasons.append(f"VR {vol_ratio:.1f}x ⚡")
+    elif vol_ratio >= 3.0:
         score += 40
         reasons.append(f"VR {vol_ratio:.1f}x")
     elif vol_ratio >= 2.0:

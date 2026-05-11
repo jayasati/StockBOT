@@ -32,20 +32,37 @@ def _evaluate_symbol(
     intraday: pd.DataFrame,
     daily: pd.DataFrame,
     fundamentals: dict[str, str],
+    unknown_events: dict[str, str] | None = None,
 ) -> StockSignals | None:
     """Score one symbol; apply filing bonus; return signals only if it
     crosses the configured threshold *and* is not suppressed. Returns None
-    otherwise. Pure over already-fetched data."""
+    otherwise. Pure over already-fetched data.
+
+    ``fundamentals`` is the binary_high filing map (directionally positive:
+    order wins, dividends, PLI). These get the +30 score bonus.
+
+    ``unknown_events`` is the event_unknown map (earnings, M&A, allotments).
+    Surfaced as a ``📢 event`` tag with the filing title so the user sees
+    the catalyst, but no score change — direction is ambiguous without the
+    body text (PVRINOX 2026-05-11 fired the +30 on weak earnings, sank 4%)."""
     if daily.empty:
         return None
     signals = score_stock(symbol, intraday, daily)
     if symbol in fundamentals:
-        # Binary BSE filing in the last 60 minutes: an earnings beat / order
-        # win / acquisition tends to drive several ATRs of move, dwarfing
-        # microstructure signals.
+        # Directionally positive filing: an order win / dividend / PLI
+        # tends to drive several ATRs of move, dwarfing microstructure
+        # signals. The +30 is intentionally large because the direction is
+        # known.
         signals.score = min(100, signals.score + 30)
         signals.filing_title = fundamentals[symbol]
         signals.reasons.append("📰 filing")
+    elif unknown_events and symbol in unknown_events:
+        # Direction-ambiguous event (e.g. earnings just released). Flag
+        # for awareness but do not bias the score. If microstructure is
+        # already strong enough to cross threshold on its own, we'll alert
+        # and the user can read the PDF themselves.
+        signals.filing_title = unknown_events[symbol]
+        signals.reasons.append("📢 event")
     log.debug("%s: score=%d %s", symbol, signals.score, signals.reasons)
     if signals.score < settings.composite_threshold:
         return None
@@ -67,7 +84,10 @@ async def _dispatch(telegram: Telegram, signals: StockSignals) -> None:
 
 
 async def scan_symbol(
-    telegram: Telegram, symbol: str, fundamentals: dict[str, str]
+    telegram: Telegram,
+    symbol: str,
+    fundamentals: dict[str, str],
+    unknown_events: dict[str, str] | None = None,
 ) -> None:
     """Event-driven scan for a single symbol. Called from the bar-event
     consumer when a 5-min bar closes. No max-alerts cap — alerts arrive
@@ -79,7 +99,9 @@ async def scan_symbol(
     if symbol not in intraday_data:
         return
     daily = market_data._daily_cache.get(symbol, pd.DataFrame())
-    signals = _evaluate_symbol(symbol, intraday_data[symbol], daily, fundamentals)
+    signals = _evaluate_symbol(
+        symbol, intraday_data[symbol], daily, fundamentals, unknown_events,
+    )
     if signals is None:
         return
     await _dispatch(telegram, signals)
@@ -97,6 +119,7 @@ async def scan_once(telegram: Telegram) -> None:
     for symbol, classification, title, _link in new_filings:
         log.info("Filing [%s] %s: %s", classification, symbol, title)
     fundamentals = filings.recent_high_priority(60)
+    unknown_events = filings.recent_unknown_events(60)
 
     log.info("Scanning %d symbols...", len(WATCHLIST))
     intraday_data = market_data.fetch_intraday(WATCHLIST)
@@ -109,7 +132,9 @@ async def scan_once(telegram: Telegram) -> None:
         if symbol not in intraday_data:
             continue
         daily = market_data._daily_cache.get(symbol, pd.DataFrame())
-        signals = _evaluate_symbol(symbol, intraday_data[symbol], daily, fundamentals)
+        signals = _evaluate_symbol(
+            symbol, intraday_data[symbol], daily, fundamentals, unknown_events,
+        )
         if signals is not None:
             candidates.append(signals)
 

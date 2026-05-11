@@ -59,8 +59,11 @@ IST = ZoneInfo("Asia/Kolkata")
 
 DEFAULT_DB_PATH = Path("alerts.db")
 MAX_BARS_PER_SYMBOL = 200
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS bars_5m (
+# Template is interpolated with the table name at init time. SQLite doesn't
+# bind table names as parameters; the name is a class-controlled constant
+# (never user input), so f-string interpolation is safe here.
+SCHEMA_TEMPLATE = """
+CREATE TABLE IF NOT EXISTS {table} (
     symbol  TEXT    NOT NULL,
     ts      INTEGER NOT NULL,   -- UTC epoch milliseconds (bar open time)
     open    REAL    NOT NULL,
@@ -93,14 +96,17 @@ class Bar:
     volume: float
 
 
-def _floor_to_5m(ts_ist: pd.Timestamp) -> pd.Timestamp:
-    """Floor a tz-aware IST timestamp to its 5-min slot start.
-
-    Standard ``minute - (minute % 5)`` aligns naturally to 09:15 since
-    15 % 5 == 0; the test suite covers the boundary case explicitly.
-    """
-    minute = ts_ist.minute - (ts_ist.minute % 5)
+def _floor_to_slot(ts_ist: pd.Timestamp, minutes: int) -> pd.Timestamp:
+    """Floor a tz-aware IST timestamp to the start of its ``minutes``-wide
+    bar slot. Both 1 and 5 align cleanly to the 09:15 session open."""
+    minute = ts_ist.minute - (ts_ist.minute % minutes)
     return ts_ist.replace(minute=minute, second=0, microsecond=0)
+
+
+def _floor_to_5m(ts_ist: pd.Timestamp) -> pd.Timestamp:
+    """Floor to a 5-min slot. Kept for backward compatibility with callers
+    (and tests) that import this symbol directly."""
+    return _floor_to_slot(ts_ist, 5)
 
 
 def _is_in_session(slot_ts: pd.Timestamp) -> bool:
@@ -130,10 +136,22 @@ class BarAggregator:
         db_path: Path | str = DEFAULT_DB_PATH,
         max_bars: int = MAX_BARS_PER_SYMBOL,
         on_bar_complete: Callable[[Bar], None] | None = None,
+        *,
+        bar_width_minutes: int = 5,
+        table_name: str = "bars_5m",
     ) -> None:
+        if bar_width_minutes not in (1, 5):
+            # The session-aligned floors only work for divisors of 5
+            # starting at minute 15 (the session open). 1 and 5 are the
+            # only widths we use today; widen this gate if you add 15m.
+            raise ValueError(f"unsupported bar width: {bar_width_minutes}m")
+        if not table_name.replace("_", "").isalnum():
+            raise ValueError(f"unsafe table name: {table_name!r}")
         self.db_path = Path(db_path)
         self.max_bars = max_bars
         self.on_bar_complete = on_bar_complete
+        self.bar_width_minutes = bar_width_minutes
+        self.table_name = table_name
         self._lock = threading.Lock()
         self._completed: dict[str, deque[Bar]] = {}
         self._current: dict[str, Bar] = {}
@@ -147,7 +165,7 @@ class BarAggregator:
 
     def init_db(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
-            conn.executescript(SCHEMA)
+            conn.executescript(SCHEMA_TEMPLATE.format(table=self.table_name))
 
     def _persist(self, bar: Bar) -> None:
         # INSERT OR IGNORE makes the reconnect-replay path idempotent: if a
@@ -155,7 +173,7 @@ class BarAggregator:
         try:
             with sqlite3.connect(self.db_path, timeout=5) as conn:
                 conn.execute(
-                    "INSERT OR IGNORE INTO bars_5m "
+                    f"INSERT OR IGNORE INTO {self.table_name} "
                     "(symbol, ts, open, high, low, close, volume) "
                     "VALUES (?,?,?,?,?,?,?)",
                     (
@@ -188,7 +206,7 @@ class BarAggregator:
         ltp = float(ltp)
         vol_today = float(msg.get("vol_traded_today") or 0.0)
         ts_ist = _epoch_to_ist(float(ts_epoch))
-        slot = _floor_to_5m(ts_ist)
+        slot = _floor_to_slot(ts_ist, self.bar_width_minutes)
 
         if not _is_in_session(slot):
             with self._lock:
@@ -315,13 +333,13 @@ class BarAggregator:
         with sqlite3.connect(self.db_path, timeout=5) as conn:
             if before_ts is None:
                 cur = conn.execute(
-                    "SELECT ts, open, high, low, close, volume FROM bars_5m "
+                    f"SELECT ts, open, high, low, close, volume FROM {self.table_name} "
                     "WHERE symbol = ? ORDER BY ts DESC LIMIT ?",
                     (symbol, n),
                 )
             else:
                 cur = conn.execute(
-                    "SELECT ts, open, high, low, close, volume FROM bars_5m "
+                    f"SELECT ts, open, high, low, close, volume FROM {self.table_name} "
                     "WHERE symbol = ? AND ts < ? "
                     "ORDER BY ts DESC LIMIT ?",
                     (symbol, _ts_open_to_epoch_ms(before_ts), n),
@@ -340,6 +358,29 @@ class BarAggregator:
     def latest_tick_ts(self, symbol: str) -> datetime | None:
         with self._lock:
             return self._latest_tick_ts.get(symbol)
+
+    def latest_overall_tick_ts(
+        self, symbols: list[str] | None = None
+    ) -> tuple[str | None, datetime | None]:
+        """Return ``(symbol, ts)`` of the most recent tick across the given
+        symbols (or all subscribed symbols if ``None``), or ``(None, None)``
+        if nothing has been seen yet. Used by the ``ticks_fresh`` health
+        check — one lock acquisition, O(n) over the watchlist."""
+        with self._lock:
+            if not self._latest_tick_ts:
+                return None, None
+            if symbols is None:
+                sym, ts = max(self._latest_tick_ts.items(), key=lambda kv: kv[1])
+                return sym, ts
+            best_sym: str | None = None
+            best_ts: datetime | None = None
+            for s in symbols:
+                ts = self._latest_tick_ts.get(s)
+                if ts is None:
+                    continue
+                if best_ts is None or ts > best_ts:
+                    best_sym, best_ts = s, ts
+            return best_sym, best_ts
 
     def stats(self) -> dict:
         with self._lock:
@@ -388,7 +429,7 @@ class BarAggregator:
             return 0
         with sqlite3.connect(self.db_path, timeout=5) as conn:
             conn.executemany(
-                "INSERT OR IGNORE INTO bars_5m "
+                f"INSERT OR IGNORE INTO {self.table_name} "
                 "(symbol, ts, open, high, low, close, volume) "
                 "VALUES (?,?,?,?,?,?,?)",
                 rows,
@@ -400,21 +441,36 @@ class BarAggregator:
 # Module-level singleton + public API
 # ---------------------------------------------------------------------------
 
-_AGG: BarAggregator | None = None
+_AGG: BarAggregator | None = None         # 5-min aggregator (primary)
+_AGG_1M: BarAggregator | None = None      # 1-min aggregator (parallel)
 _LIVE_FEED = None
 _SUBSCRIBED: set[str] = set()
+_TICK_OBSERVERS: list[Callable[[dict], None]] = []
 _LOCK = threading.Lock()
 
 
 def get_aggregator() -> BarAggregator:
-    """Lazy singleton. Always touch the aggregator through this — never
-    construct your own unless you're a test passing a temp DB path."""
+    """Lazy singleton for the 5-min aggregator. Always touch the aggregator
+    through this — never construct your own unless you're a test passing a
+    temp DB path."""
     global _AGG
     if _AGG is None:
         with _LOCK:
             if _AGG is None:
-                _AGG = BarAggregator()
+                _AGG = BarAggregator(bar_width_minutes=5, table_name="bars_5m")
     return _AGG
+
+
+def get_aggregator_1m() -> BarAggregator:
+    """Lazy singleton for the 1-min aggregator. Runs alongside the 5-min
+    one — every tick is processed by both. Provides ``bars_1m`` for
+    future scoring paths that need sub-bar latency."""
+    global _AGG_1M
+    if _AGG_1M is None:
+        with _LOCK:
+            if _AGG_1M is None:
+                _AGG_1M = BarAggregator(bar_width_minutes=1, table_name="bars_1m")
+    return _AGG_1M
 
 
 def set_aggregator(agg: BarAggregator) -> None:
@@ -422,6 +478,42 @@ def set_aggregator(agg: BarAggregator) -> None:
     global _AGG
     with _LOCK:
         _AGG = agg
+
+
+def add_tick_observer(fn: Callable[[dict], None]) -> None:
+    """Register an extra synchronous tick consumer. The observer is called
+    after the bar aggregators have processed the tick. Use this for
+    side-channel detectors (fast-mover, custom metrics) that need raw
+    ticks without owning the WebSocket lifecycle.
+
+    Observers are invoked on the WebSocket thread; do not block. Bridge
+    to asyncio via ``loop.call_soon_threadsafe`` if you need async work."""
+    with _LOCK:
+        _TICK_OBSERVERS.append(fn)
+
+
+def _dispatch_tick(msg: dict) -> None:
+    """Fan-out: 5-min aggregator, 1-min aggregator, then registered observers.
+
+    Each consumer is independent — a failure in one must not prevent the
+    others from seeing the tick."""
+    try:
+        get_aggregator().on_tick(msg)
+    except Exception:
+        log.exception("5m aggregator on_tick raised")
+    try:
+        get_aggregator_1m().on_tick(msg)
+    except Exception:
+        log.exception("1m aggregator on_tick raised")
+    # Snapshot the observer list under the lock so a concurrent
+    # add_tick_observer doesn't perturb iteration.
+    with _LOCK:
+        observers = list(_TICK_OBSERVERS)
+    for fn in observers:
+        try:
+            fn(msg)
+        except Exception:
+            log.exception("tick observer %r raised", fn)
 
 
 def subscribe(symbols: list[str]) -> None:
@@ -436,14 +528,16 @@ def subscribe(symbols: list[str]) -> None:
     new = [s for s in symbols if s not in _SUBSCRIBED]
     if not new:
         return
-    agg = get_aggregator()
+    # Eager-init both aggregators so the first tick has no construction lag.
+    get_aggregator()
+    get_aggregator_1m()
     # Local import to avoid pulling in fyers SDK at module load time
     # (tests instantiate BarAggregator without ever needing the SDK).
     from fyers_client import LiveFeed
 
     with _LOCK:
         if _LIVE_FEED is None:
-            _LIVE_FEED = LiveFeed(symbols=new, on_tick=agg.on_tick)
+            _LIVE_FEED = LiveFeed(symbols=new, on_tick=_dispatch_tick)
             _LIVE_FEED.start()
         else:
             _LIVE_FEED.add_symbols(new)
@@ -462,10 +556,19 @@ def stop() -> None:
             _LIVE_FEED = None
     if _AGG is not None:
         _AGG.flush()
+    if _AGG_1M is not None:
+        _AGG_1M.flush()
 
 
 def get_5m_bars(symbol: str, n: int = 100) -> pd.DataFrame:
     return get_aggregator().get_5m_bars(symbol, n)
+
+
+def get_1m_bars(symbol: str, n: int = 100) -> pd.DataFrame:
+    """Most recent ``n`` completed 1-min bars for ``symbol``. Same OHLCV
+    contract as ``get_5m_bars``. Cold-cache fallback to SQLite — but no
+    yfinance backfill: 1-min bars accumulate from process start only."""
+    return get_aggregator_1m().get_5m_bars(symbol, n)
 
 
 def get_current_partial(symbol: str) -> Bar | None:

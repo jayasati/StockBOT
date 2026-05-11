@@ -14,7 +14,7 @@ import shutil
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -111,11 +111,26 @@ def fyers_websocket_connected() -> CheckResult:
     )
 
 
+BAR_WIDTH_S = 300  # 5-minute bars
+
+
 def bars_fresh(
     db_path: Path, symbols: list[str], max_age_s: int = 360
 ) -> CheckResult:
-    """At least one tracked symbol has a bar in ``bars_5m`` newer than
-    ``max_age_s`` seconds ago. (Spec: 6 minutes during market hours.)"""
+    """At least one tracked symbol has a bar in ``bars_5m`` whose *close* is
+    no more than ``max_age_s`` seconds ago.
+
+    Bar ``ts`` is the slot **open** time and the row only lands in SQLite
+    when the *next* slot's first tick arrives, so the bar is naturally
+    ~5 minutes "old" relative to its open the moment it's persisted. We
+    measure freshness against the bar's close (``open + 300s``), clamped to
+    zero so a synthetic test bar whose close is in the future still reads
+    as fresh. With the close anchor, normal operation keeps age in
+    ``[0, 300s]``; the default 360s threshold gives a 1-minute slack for
+    illiquid symbols whose first-tick-of-next-slot can lag the boundary.
+
+    The detail string names the freshest symbol so the alert triage path
+    can immediately see which feed is alive."""
     start = time.monotonic()
     if not symbols:
         return CheckResult(False, "no symbols passed", _ms(start))
@@ -123,25 +138,58 @@ def bars_fresh(
         with sqlite3.connect(db_path, timeout=5) as conn:
             placeholders = ",".join("?" * len(symbols))
             row = conn.execute(
-                f"SELECT MAX(ts) FROM bars_5m WHERE symbol IN ({placeholders})",
+                f"SELECT symbol, ts FROM bars_5m WHERE symbol IN ({placeholders}) "
+                f"ORDER BY ts DESC LIMIT 1",
                 symbols,
             ).fetchone()
     except sqlite3.Error as e:
         return CheckResult(False, f"sqlite error: {e}", _ms(start))
-    max_ts_ms = row[0] if row else None
-    if max_ts_ms is None:
+    if row is None:
         return CheckResult(False, "no bars in DB for any tracked symbol", _ms(start))
+    freshest_sym, max_ts_ms = row[0], row[1]
     try:
         max_ts = datetime.fromtimestamp(int(max_ts_ms) / 1000, tz=IST)
     except (TypeError, ValueError, OSError) as e:
         return CheckResult(False, f"unparseable ts {max_ts_ms!r}: {e}", _ms(start))
-    age_s = (datetime.now(IST) - max_ts).total_seconds()
+    bar_close = max_ts + timedelta(seconds=BAR_WIDTH_S)
+    age_s = max(0.0, (datetime.now(IST) - bar_close).total_seconds())
     if age_s <= max_age_s:
         return CheckResult(
-            True, f"latest bar {age_s:.0f}s old", _ms(start),
+            True, f"latest bar {age_s:.0f}s old ({freshest_sym})", _ms(start),
         )
     return CheckResult(
-        False, f"latest bar {age_s:.0f}s old (> {max_age_s}s)", _ms(start),
+        False,
+        f"latest bar {age_s:.0f}s old ({freshest_sym}) (> {max_age_s}s)",
+        _ms(start),
+    )
+
+
+def ticks_fresh(symbols: list[str], max_age_s: int = 60) -> CheckResult:
+    """At least one tracked symbol received a Fyers tick within ``max_age_s``
+    seconds. Independent of 5-min bar cadence — proves the WebSocket feed
+    itself is alive and pumping. Threshold of 60s catches feed degradation
+    ~4 minutes earlier than ``bars_fresh`` can.
+
+    The check reads from the in-process ``BarAggregator``'s per-symbol
+    latest-tick timestamps; no network or DB call. Outside market hours
+    ticks naturally dry up, so callers should suppress this check then
+    (the monitor's lightweight subset already excludes it off-hours)."""
+    start = time.monotonic()
+    if not symbols:
+        return CheckResult(False, "no symbols passed", _ms(start))
+    from data.realtime_feed import get_aggregator
+    sym, ts = get_aggregator().latest_overall_tick_ts(symbols)
+    if ts is None:
+        return CheckResult(False, "no ticks received yet", _ms(start))
+    age_s = max(0.0, (datetime.now(IST) - ts).total_seconds())
+    if age_s <= max_age_s:
+        return CheckResult(
+            True, f"latest tick {age_s:.0f}s old ({sym})", _ms(start),
+        )
+    return CheckResult(
+        False,
+        f"latest tick {age_s:.0f}s old ({sym}) (> {max_age_s}s)",
+        _ms(start),
     )
 
 

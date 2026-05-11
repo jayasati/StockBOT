@@ -20,6 +20,7 @@ import logging
 
 import fyers_client
 from data import filings, realtime_feed
+from data.fast_mover import FastMove, FastMover, format_fast_move
 
 from health import MonitorLoop, format_status
 
@@ -48,9 +49,29 @@ async def _bar_event_consumer(
         try:
             yf_symbol = fyers_client.to_yf(fy_symbol)
             fundamentals = filings.recent_high_priority(60)
-            await scan_symbol(telegram, yf_symbol, fundamentals)
+            unknown_events = filings.recent_unknown_events(60)
+            await scan_symbol(telegram, yf_symbol, fundamentals, unknown_events)
         except Exception:
             log.exception("Event-driven scan failed for %s", fy_symbol)
+
+
+async def _fast_move_consumer(
+    telegram: Telegram, queue: asyncio.Queue[FastMove]
+) -> None:
+    """Drain fast-move events from the tick-level detector and dispatch a
+    Telegram message per event. The FastMover already enforces per-symbol
+    cooldown, so we don't need to deduplicate here."""
+    while True:
+        event = await queue.get()
+        try:
+            await telegram.send(format_fast_move(event))
+            log.info(
+                "Fast move %s %s %+.2f%% in %ds (%.2f → %.2f)",
+                event.direction, event.symbol, event.pct, event.window_s,
+                event.first_price, event.last_price,
+            )
+        except Exception:
+            log.exception("Fast-move dispatch failed for %s", event.symbol)
 
 
 async def main() -> None:
@@ -114,6 +135,31 @@ async def main() -> None:
         name="bar-event-consumer",
     )
 
+    # Tick-level fast-move detector. Runs as a tick observer alongside the
+    # bar aggregators; bridges to the asyncio loop via a queue so the
+    # Telegram send happens on-loop. Watchlist filter is by Fyers symbol
+    # form (NSE:X-EQ), which is exactly what the WebSocket emits.
+    fast_move_queue: asyncio.Queue[FastMove] = asyncio.Queue()
+
+    def _on_fast_move(event: FastMove) -> None:
+        try:
+            main_loop.call_soon_threadsafe(
+                fast_move_queue.put_nowait, event
+            )
+        except RuntimeError:
+            pass
+
+    fast_mover = FastMover(
+        on_alert=_on_fast_move,
+        watchlist=set(fy_symbols),
+    )
+    realtime_feed.add_tick_observer(fast_mover.on_tick)
+
+    fast_move_task = asyncio.create_task(
+        _fast_move_consumer(telegram, fast_move_queue),
+        name="fast-move-consumer",
+    )
+
     try:
         while True:
             try:
@@ -134,11 +180,11 @@ async def main() -> None:
         monitor.stop()
         commands.request_stop()
         consumer_task.cancel()
-        # Give all three a moment to wind down cleanly.
+        fast_move_task.cancel()
         try:
             await asyncio.wait_for(
                 asyncio.gather(
-                    monitor_task, commands_task, consumer_task,
+                    monitor_task, commands_task, consumer_task, fast_move_task,
                     return_exceptions=True,
                 ),
                 timeout=5,

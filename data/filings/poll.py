@@ -91,14 +91,28 @@ async def poll_filings() -> list[tuple[str, str, str, str]]:
 
 
 def recent_high_priority(minutes: int) -> dict[str, str]:
-    """Return {symbol: title} of the most recent binary_high filings in the window."""
+    """Return {symbol: title} of the most recent binary_high filings in the
+    window. These are directionally clear positives (orders, dividends, PLI,
+    buybacks, bonus issues) and earn the composite scorer's +30 bonus."""
+    return _recent_by_class("binary_high", minutes)
+
+
+def recent_unknown_events(minutes: int) -> dict[str, str]:
+    """Return {symbol: title} of recent ``event_unknown`` filings — earnings,
+    M&A, allotments, schemes. Direction can't be inferred from the title,
+    so the scorer surfaces these as an informational tag without applying
+    a score bonus (positive OR negative)."""
+    return _recent_by_class("event_unknown", minutes)
+
+
+def _recent_by_class(classification: str, minutes: int) -> dict[str, str]:
     cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat()
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
             "SELECT symbol, title FROM filings_seen "
-            "WHERE classification = 'binary_high' AND seen_at > ? "
+            "WHERE classification = ? AND seen_at > ? "
             "ORDER BY seen_at DESC",
-            (cutoff,),
+            (classification, cutoff),
         ).fetchall()
     result: dict[str, str] = {}
     for sym, title in rows:

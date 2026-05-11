@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -31,6 +32,15 @@ INTERVAL_OFFHOURS_S = 300
 MONITOR_OPEN = (9, 0)
 MONITOR_CLOSE = (15, 45)
 
+# Time-based checks ("the feed should have produced X by now") that need a
+# grace window at process startup. ``bars_fresh`` always reports "no bars in
+# DB" until the first 5-min boundary lands (~5 min after first tick);
+# ``ticks_fresh`` reports "no ticks yet" until the WebSocket handshakes (~few
+# seconds). During the warmup window, failures from these checks are masked
+# so a fresh restart doesn't fire a false alert.
+WARMUP_S = 360
+WARMUP_MASKED_CHECKS = ("bars_fresh", "ticks_fresh")
+
 
 def _in_monitor_window(ts: datetime | None = None) -> bool:
     if ts is None:
@@ -50,6 +60,7 @@ async def _run_full_checks(
     results["db_writable"] = checks.db_writable(db_path)
     results["fyers_token_valid"] = checks.fyers_token_valid()
     results["fyers_websocket_connected"] = checks.fyers_websocket_connected()
+    results["ticks_fresh"] = checks.ticks_fresh(watchlist)
     results["bars_fresh"] = checks.bars_fresh(db_path, watchlist)
     # Async checks in parallel.
     nse_task = asyncio.create_task(checks.nse_api_responsive())
@@ -98,7 +109,12 @@ async def run_once(
 
 class MonitorLoop:
     """Background async task: runs checks on a cadence, persists results,
-    drives the FailureTracker."""
+    drives the FailureTracker.
+
+    Startup warmup: for ``warmup_s`` seconds after ``run()`` begins, any
+    failure from a time-based check (``bars_fresh``, ``ticks_fresh``) is
+    rewritten to a benign pass. This avoids the inevitable false alert in
+    the first ~5 minutes of uptime when no bar has landed yet."""
 
     def __init__(
         self,
@@ -106,21 +122,35 @@ class MonitorLoop:
         watchlist: list[str],
         telegram_bot_token: str,
         db_path: Path = DB_PATH,
+        warmup_s: int = WARMUP_S,
     ):
         self._send_alert = send_alert
         self._watchlist = watchlist
         self._token = telegram_bot_token
         self._db_path = db_path
+        self._warmup_s = warmup_s
+        self._warmup_until: float | None = None
         self.tracker = FailureTracker(send_alert)
         self._stop = asyncio.Event()
 
     def stop(self) -> None:
         self._stop.set()
 
+    def _apply_warmup(self, results: dict[str, CheckResult]) -> None:
+        """Replace failing time-based checks with a benign pass while
+        ``_warmup_until`` is in the future. Mutates ``results`` in place."""
+        if self._warmup_until is None or time.monotonic() >= self._warmup_until:
+            return
+        for name in WARMUP_MASKED_CHECKS:
+            r = results.get(name)
+            if r is not None and not r.ok:
+                results[name] = CheckResult(True, "warming up", r.latency_ms)
+
     async def run(self) -> None:
+        self._warmup_until = time.monotonic() + self._warmup_s
         log.info(
-            "Health monitor started (market interval %ds, off-hours %ds)",
-            INTERVAL_MARKET_S, INTERVAL_OFFHOURS_S,
+            "Health monitor started (market interval %ds, off-hours %ds, warmup %ds)",
+            INTERVAL_MARKET_S, INTERVAL_OFFHOURS_S, self._warmup_s,
         )
         while not self._stop.is_set():
             in_market = _in_monitor_window()
@@ -135,6 +165,8 @@ class MonitorLoop:
                 log.exception("run_once raised; skipping this tick")
                 await self._sleep(INTERVAL_MARKET_S if in_market else INTERVAL_OFFHOURS_S)
                 continue
+
+            self._apply_warmup(results)
 
             for name, r in results.items():
                 try:
