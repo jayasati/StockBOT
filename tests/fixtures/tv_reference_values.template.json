@@ -1,0 +1,115 @@
+{
+  "_meta": {
+    "description": "TradingView parity reference values. Pulled manually from TV charts. Used by tests/test_indicators.py::TestTradingViewParity once populated.",
+    "indicator_params": {
+      "rsi": {"length": 14, "source": "close"},
+      "macd": {"fast": 12, "slow": 26, "signal": 9, "source": "close", "ma_type": "EMA"},
+      "adx_dmi": {"adx_smoothing": 14, "di_length": 14},
+      "bollinger": {"length": 20, "stdev": 2.0, "source": "close"},
+      "supertrend": {"atr_length": 10, "factor": 3.0},
+      "stochastic": {"length_k": 14, "smooth_k": 3, "smooth_d": 3},
+      "mfi": {"length": 14},
+      "atr": {"length": 14, "smoothing": "RMA"},
+      "obv": {"source": "close"},
+      "cmf": {"length": 20}
+    },
+    "tolerances": {
+      "rsi": "abs <= 0.10",
+      "macd_*": "rel <= 0.05%",
+      "adx_*": "abs <= 0.50",
+      "bollinger_*": "rel <= 0.01%",
+      "supertrend_value": "rel <= 0.10%",
+      "supertrend_direction": "exact match",
+      "stoch_*": "abs <= 0.20",
+      "mfi": "abs <= 0.20",
+      "atr": "rel <= 0.05%",
+      "obv": "exact (integer-valued)",
+      "cmf": "abs <= 0.005"
+    },
+    "instructions": [
+      "1. Copy this file to tv_reference_values.json before editing — the .template.json is the canonical starting point and should stay all-null.",
+      "2. For each fixture key below, replace `null` values with what TradingView's Data Window shows for that bar timestamp.",
+      "3. Pull values for AT LEAST the last 3 bars; expand to 10 when you have time.",
+      "4. Direction values for supertrend: +1 when green/uptrend, -1 when red/downtrend.",
+      "5. Skip an entire indicator (delete its block) if you can't add it on TV. The parity test will only assert against keys you provide."
+    ]
+  },
+
+  "reliance_trending_5m": {
+    "rsi": {
+      "2026-05-09T15:15:00+05:30": null,
+      "2026-05-09T15:20:00+05:30": null,
+      "2026-05-09T15:25:00+05:30": null
+    },
+    "macd_macd": {
+      "2026-05-09T15:15:00+05:30": null,
+      "2026-05-09T15:20:00+05:30": null,
+      "2026-05-09T15:25:00+05:30": null
+    },
+    "macd_signal": {
+      "2026-05-09T15:15:00+05:30": null,
+      "2026-05-09T15:20:00+05:30": null,
+      "2026-05-09T15:25:00+05:30": null
+    },
+    "macd_histogram": {
+      "2026-05-09T15:15:00+05:30": null,
+      "2026-05-09T15:20:00+05:30": null,
+      "2026-05-09T15:25:00+05:30": null
+    },
+    "adx_adx": {
+      "2026-05-09T15:15:00+05:30": null,
+      "2026-05-09T15:20:00+05:30": null,
+      "2026-05-09T15:25:00+05:30": null
+    },
+    "adx_di_plus": {
+      "2026-05-09T15:15:00+05:30": null,
+      "2026-05-09T15:20:00+05:30": null,
+      "2026-05-09T15:25:00+05:30": null
+    },
+    "adx_di_minus": {
+      "2026-05-09T15:15:00+05:30": null,
+      "2026-05-09T15:20:00+05:30": null,
+      "2026-05-09T15:25:00+05:30": null
+    },
+    "bollinger_upper": {
+      "2026-05-09T15:15:00+05:30": null,
+      "2026-05-09T15:20:00+05:30": null,
+      "2026-05-09T15:25:00+05:30": null
+    },
+    "bollinger_lower": {
+      "2026-05-09T15:15:00+05:30": null,
+      "2026-05-09T15:20:00+05:30": null,
+      "2026-05-09T15:25:00+05:30": null
+    },
+    "supertrend_value": {
+      "2026-05-09T15:15:00+05:30": null,
+      "2026-05-09T15:20:00+05:30": null,
+      "2026-05-09T15:25:00+05:30": null
+    },
+    "supertrend_direction": {
+      "2026-05-09T15:15:00+05:30": null,
+      "2026-05-09T15:20:00+05:30": null,
+      "2026-05-09T15:25:00+05:30": null
+    },
+    "stoch_k": {
+      "2026-05-09T15:15:00+05:30": null,
+      "2026-05-09T15:20:00+05:30": null,
+      "2026-05-09T15:25:00+05:30": null
+    },
+    "stoch_d": {
+      "2026-05-09T15:15:00+05:30": null,
+      "2026-05-09T15:20:00+05:30": null,
+      "2026-05-09T15:25:00+05:30": null
+    },
+    "mfi": {
+      "2026-05-09T15:15:00+05:30": null,
+      "2026-05-09T15:20:00+05:30": null,
+      "2026-05-09T15:25:00+05:30": null
+    },
+    "atr": {
+      "2026-05-09T15:15:00+05:30": null,
+      "2026-05-09T15:20:00+05:30": null,
+      "2026-05-09T15:25:00+05:30": null
+    }
+  }
+}

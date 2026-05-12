@@ -12,6 +12,8 @@ the alert criterion stays identical."""
 from __future__ import annotations
 
 import logging
+from datetime import date as _date
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
@@ -24,7 +26,51 @@ from .scoring import StockSignals, score_stock
 from .storage import record_alert
 from .watchlist import WATCHLIST
 
+if TYPE_CHECKING:
+    from indicators import IndicatorSnapshot
+
 log = logging.getLogger("alertbot.scan")
+
+
+def _build_snapshot(
+    symbol: str,
+    intraday: pd.DataFrame,
+    daily: pd.DataFrame,
+    session_date: _date,
+) -> "IndicatorSnapshot | None":
+    """Build the Phase-4 indicator snapshot for the scorer.
+
+    Restricted to the indicators the current ``score_stock`` actually
+    reads (RSI on 5m). Other Phase-4 indicators are computed and tested
+    in the registry but not yet consumed by scoring — Phase 7 will
+    expand this ``indicators`` tuple as it pulls in more components
+    (MACD, ADX, ATR, levels, regime gating, …).
+
+    Returns None on empty input or any compute error so ``score_stock``
+    transparently falls back to the legacy SMA-rolling RSI path."""
+    if intraday.empty or daily.empty:
+        return None
+    bars_lower = intraday.rename(columns={
+        "Open": "open", "High": "high", "Low": "low",
+        "Close": "close", "Volume": "volume",
+    })
+    try:
+        # Local import keeps the indicators package out of the bot.scan
+        # import path until it's actually needed (test discovery + cold
+        # imports stay fast).
+        from indicators import compute_all
+        return compute_all(
+            symbol=symbol,
+            bars=bars_lower,
+            daily_df=daily,
+            session_date=session_date,
+            target_timeframes=("5m",),
+            indicators=("rsi",),
+        )
+    except Exception:
+        log.exception("compute_all failed for %s; falling back to legacy RSI",
+                      symbol)
+        return None
 
 
 def _evaluate_symbol(
@@ -47,7 +93,17 @@ def _evaluate_symbol(
     body text (PVRINOX 2026-05-11 fired the +30 on weak earnings, sank 4%)."""
     if daily.empty:
         return None
-    signals = score_stock(symbol, intraday, daily)
+    session_date = (
+        intraday.index[-1].date()
+        if not intraday.empty and isinstance(intraday.index, pd.DatetimeIndex)
+        else None
+    )
+    snapshot = (
+        _build_snapshot(symbol, intraday, daily, session_date)
+        if session_date is not None
+        else None
+    )
+    signals = score_stock(symbol, intraday, daily, snapshot=snapshot)
     if symbol in fundamentals:
         # Directionally positive filing: an order win / dividend / PLI
         # tends to drive several ATRs of move, dwarfing microstructure

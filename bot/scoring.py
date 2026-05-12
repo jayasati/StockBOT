@@ -5,10 +5,14 @@ fraction is anchored to the bar being scored, not wall-clock now."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from . import indicators
+
+if TYPE_CHECKING:
+    from indicators import IndicatorSnapshot
 
 
 @dataclass
@@ -31,6 +35,7 @@ def score_stock(
     daily: pd.DataFrame,
     *,
     as_of: pd.Timestamp | None = None,
+    snapshot: "IndicatorSnapshot | None" = None,
 ) -> StockSignals:
     """
     Composite microstructure score (0-100). Weights tuned from a 60-day
@@ -57,7 +62,18 @@ def score_stock(
 
     price = float(intraday["Close"].iloc[-1])
 
-    rsi = indicators.compute_rsi(intraday["Close"])
+    # Phase 4 wiring: when a precomputed snapshot is provided, prefer
+    # snapshot.values["rsi_5m"] (Wilder's RMA, TV-parity) over the legacy
+    # SMA-rolling compute_rsi. Snapshot=None keeps the legacy path so all
+    # existing call sites (backtest, swing, anything that hasn't been
+    # plumbed through compute_all yet) stay byte-identical.
+    # TODO(Phase 7): replace this entire function with a REGISTRY-driven
+    # weighted aggregation that reads from `snapshot.values` for every
+    # component (RSI, MACD, ADX, volume, levels, regime gating, ...).
+    if snapshot is not None and snapshot.values.get("rsi_5m") is not None:
+        rsi = float(snapshot.values["rsi_5m"])
+    else:
+        rsi = indicators.compute_rsi(intraday["Close"])
 
     vol_ratio = indicators.compute_volume_ratio(intraday, daily, as_of=as_of)
 
