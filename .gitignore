@@ -51,3 +51,5 @@ dist/
 .claude
 
 idea
+
+alerts.db*

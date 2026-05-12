@@ -43,6 +43,20 @@ def is_suppressed(symbol: str, cooldown_minutes: int = 60) -> tuple[bool, str]:
         if row:
             return True, f"cooldown ({cooldown_minutes}m)"
 
+        # Paper-trade lock — if a paper trade for this symbol is still
+        # OPEN, suppress further alerts until it closes (SL/TP/TIMEOUT).
+        # Without this, the 60-min cooldown expires while a trade may
+        # still be open for hours, causing Telegram re-alerts that have
+        # no journal counterpart (the dup-guard in ``open_trade``
+        # silently blocks the second insert).
+        row = conn.execute(
+            "SELECT 1 FROM paper_trades "
+            "WHERE symbol = ? AND status = 'OPEN' LIMIT 1",
+            (symbol,),
+        ).fetchone()
+        if row:
+            return True, "paper trade open"
+
         # ASM stage 2+
         row = conn.execute(
             "SELECT value FROM risk_flags WHERE symbol = ? AND flag_type = 'asm'",

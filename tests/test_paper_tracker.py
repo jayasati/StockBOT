@@ -48,9 +48,11 @@ def tmp_db(tmp_path, monkeypatch):
     import bot.config
     import bot.db
     import bot.storage
+    import bot.suppression.rules
     monkeypatch.setattr(bot.config, "DB_PATH", db_path)
     monkeypatch.setattr(bot.storage, "DB_PATH", db_path)
     monkeypatch.setattr(bot.db, "DB_PATH", db_path)
+    monkeypatch.setattr(bot.suppression.rules, "DB_PATH", db_path)
     bot.db.init_db()
     return db_path
 
@@ -1006,7 +1008,17 @@ class TestDeriveSlTp:
 class TestFromSignal:
     """Glue between StockSignals and open_trade. Uses duck-typed
     stub objects so the test doesn't have to construct a full
-    StockSignals (which would pull in bot.scoring + its deps)."""
+    StockSignals (which would pull in bot.scoring + its deps).
+
+    The late-session cutoff is disabled class-wide via the autouse
+    fixture so these tests stay deterministic regardless of wall-
+    clock. The cutoff behavior itself is covered by
+    ``TestPastEntryCutoff``."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_cutoff(self, monkeypatch):
+        import paper.tracker as tr
+        monkeypatch.setattr(tr, "_past_entry_cutoff", lambda *a, **kw: False)
 
     @staticmethod
     def _stub(**overrides):
@@ -1352,3 +1364,51 @@ class TestFormatAlertSLTP:
         )
         text = format_alert(s)
         assert "🎯" not in text
+
+
+# ---------------------------------------------------------------------------
+# Phase-5b paper-open suppression: re-alerts blocked while paper trade is OPEN
+# ---------------------------------------------------------------------------
+
+class TestPaperOpenSuppression:
+    """An OPEN paper trade on a symbol must block fresh Telegram
+    re-alerts until that trade closes — otherwise the 60-min cooldown
+    expires while the trade is still active, producing alerts that
+    have no journal counterpart (silently deduped by open_trade)."""
+
+    def test_open_paper_trade_suppresses(self, tmp_db):
+        from bot.suppression.rules import is_suppressed
+        from paper.tracker import open_trade
+
+        open_trade("TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {})
+        blocked, reason = is_suppressed("TEST.NS", cooldown_minutes=60)
+        assert blocked
+        assert "paper" in reason.lower()
+
+    def test_closed_paper_trade_does_not_suppress(self, tmp_db):
+        """Once the trade closes (SL/TP/TIMEOUT/MANUAL), the suppression
+        ends — a new alert later in the day can fire again."""
+        from bot.suppression.rules import is_suppressed
+        from paper.tracker import _close, open_trade
+
+        tid = open_trade("TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {})
+        _close(tid, "TP1", 104.0)
+        blocked, reason = is_suppressed("TEST.NS", cooldown_minutes=60)
+        # No alerts_sent row was written (we didn't go through _dispatch),
+        # so cooldown shouldn't fire either. Pure paper-open test.
+        assert not blocked, f"expected no suppression, got: {reason!r}"
+
+    def test_open_on_other_symbol_does_not_suppress(self, tmp_db):
+        from bot.suppression.rules import is_suppressed
+        from paper.tracker import open_trade
+
+        open_trade("AAA.NS", "LONG", 100, 98, 104, None, 10, 0.7, {})
+        blocked, reason = is_suppressed("BBB.NS", cooldown_minutes=60)
+        assert not blocked
+
+    def test_no_trade_history_does_not_suppress(self, tmp_db):
+        """Fresh DB — symbol never seen — no suppression."""
+        from bot.suppression.rules import is_suppressed
+        blocked, reason = is_suppressed("UNTOUCHED.NS", cooldown_minutes=60)
+        assert not blocked
+        assert reason == ""
