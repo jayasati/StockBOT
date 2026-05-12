@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from data import filings
+from paper import tracker as paper_tracker
 
 from . import market_data, suppression
 from .config import settings
@@ -65,7 +66,11 @@ def _build_snapshot(
             daily_df=daily,
             session_date=session_date,
             target_timeframes=("5m",),
-            indicators=("rsi",),
+            # Phase-5: expanded from rsi-only so signal_indicators
+            # captures enough to drive win_rate_by_indicator. RSI is
+            # still the only one score_stock currently reads; the
+            # rest are journaled but not scored until Phase 7.
+            indicators=("rsi", "atr", "adx", "macd"),
         )
     except Exception:
         log.exception("compute_all failed for %s; falling back to legacy RSI",
@@ -91,6 +96,12 @@ def _evaluate_symbol(
     Surfaced as a ``📢 event`` tag with the filing title so the user sees
     the catalyst, but no score change — direction is ambiguous without the
     body text (PVRINOX 2026-05-11 fired the +30 on weak earnings, sank 4%)."""
+    # Late-session cutoff: skip the whole evaluation past 14:30 IST.
+    # A 14:30 entry has <60 min before same-day TIMEOUT at 15:30 — not
+    # enough for a typical MIS setup to develop. Cheapest path runs first.
+    if paper_tracker._past_entry_cutoff():
+        log.debug("Late-session cutoff: skipping %s", symbol)
+        return None
     if daily.empty:
         return None
     session_date = (
@@ -126,17 +137,52 @@ def _evaluate_symbol(
     if blocked:
         log.info("Suppressed %s: %s", symbol, reason)
         return None
+    _attach_sl_tp(signals, snapshot)
     return signals
 
 
+def _attach_sl_tp(
+    signals: StockSignals,
+    snapshot: "IndicatorSnapshot | None",
+) -> None:
+    """Compute ATR-based SL/TP/TP2 for the alert and stash them, plus
+    the indicator snapshot, on the ``StockSignals``. ``format_alert``
+    renders SL/TP into the Telegram message; ``_dispatch`` hands the
+    same numbers to the paper-tracker. Single derivation point so the
+    two never drift."""
+    atr_5m = snapshot.values.get("atr_5m") if snapshot is not None else None
+    sl, tp1, tp2 = paper_tracker.derive_sl_tp(signals.price, atr_5m)
+    signals.sl = sl
+    signals.tp1 = tp1
+    signals.tp2 = tp2
+    signals.snapshot = snapshot
+
+
 async def _dispatch(telegram: Telegram, signals: StockSignals) -> None:
-    """Persist + Telegram. Record_alert lands first so a concurrent path
-    (e.g. periodic scan and bar-event firing back-to-back) sees the
-    cooldown row and skips the duplicate."""
+    """Persist + (maybe) Telegram + paper trade.
+
+    Three-tier gating (see idea/promptchain_noise_reduction.txt):
+
+      score < composite_threshold       — never reaches here (filtered upstream)
+      composite_threshold <= score < telegram_threshold
+                                        — silent paper trade, no Telegram
+      score >= telegram_threshold       — paper trade + Telegram
+
+    ``record_alert`` lands first regardless so the cooldown row blocks
+    a concurrent path (e.g. periodic scan + bar-event back-to-back)
+    from opening a second paper trade on the same symbol."""
     record_alert(signals.symbol, signals.score, ", ".join(signals.reasons), signals.price)
-    await telegram.send(format_alert(signals))
-    log.info("Alerted: %s score=%d reasons=%s",
-             signals.symbol, signals.score, signals.reasons)
+    if signals.score >= settings.telegram_threshold:
+        await telegram.send(format_alert(signals))
+        log.info("Alerted: %s score=%d reasons=%s",
+                 signals.symbol, signals.score, signals.reasons)
+    else:
+        log.info("Silent paper trade: %s score=%d (below telegram_threshold=%d)",
+                 signals.symbol, signals.score, settings.telegram_threshold)
+    try:
+        paper_tracker.from_signal(signals)
+    except Exception:
+        log.exception("Paper trade open failed for %s", signals.symbol)
 
 
 async def scan_symbol(

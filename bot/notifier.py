@@ -70,6 +70,14 @@ def format_alert(s: StockSignals) -> str:
     ]
     if s.filing_title:
         lines.append(f"  📰 {s.filing_title}")
+    # Phase-5: show the SL/TP levels the paper-tracker is using so the
+    # alert matches the trade row. Only render if scanner attached
+    # them (back-compat for any pre-Phase-5 caller).
+    if s.sl is not None and s.tp1 is not None:
+        tp_line = f"🎯 SL ₹{s.sl:,.2f} · TP ₹{s.tp1:,.2f}"
+        if s.tp2 is not None:
+            tp_line += f" · TP2 ₹{s.tp2:,.2f}"
+        lines.append(tp_line)
     lines.append(
         f"<a href='https://www.tradingview.com/symbols/NSE-{sym}/'>Chart</a>"
         f" · <a href='https://groww.in/stocks/{sym.lower()}'>Groww</a>"

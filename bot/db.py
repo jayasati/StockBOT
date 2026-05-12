@@ -73,3 +73,8 @@ def init_db() -> None:
     """Create every persistent table the bot writes to. Idempotent."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.executescript(MASTER_SCHEMA)
+    # Phase-5 paper-tracker tables live in a sibling package so the SQL
+    # stays next to its writers. Local import avoids a circular path
+    # through ``bot/__init__.py``.
+    from paper.schema import ensure_paper_schema
+    ensure_paper_schema()

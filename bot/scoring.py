@@ -27,6 +27,15 @@ class StockSignals:
     score: int
     reasons: list[str] = field(default_factory=list)
     filing_title: str | None = None
+    # Phase-5 paper-tracker plumbing: scanner attaches ATR-derived
+    # SL/TP and the raw indicator snapshot so ``_dispatch`` can open
+    # a paper trade with the same prices Telegram shows. Defaults
+    # keep every pre-Phase-5 call site (backtest, swing, tests) byte-
+    # identical to before.
+    sl: float | None = None
+    tp1: float | None = None
+    tp2: float | None = None
+    snapshot: "IndicatorSnapshot | None" = None
 
 
 def score_stock(

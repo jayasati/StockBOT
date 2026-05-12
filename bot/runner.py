@@ -17,15 +17,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta
 
 import fyers_client
 from data import filings, realtime_feed
 from data.fast_mover import FastMove, FastMover, format_fast_move
+from data.trading_calendar import is_trading_day
 
 from health import MonitorLoop, format_status
+from paper import journal as paper_journal
+from paper import tracker as paper_tracker
 
 from . import commands, market_data
-from .config import settings
+from .config import IST, settings
 from .db import init_db
 from .instance_lock import single_instance
 from .logging import setup_logging
@@ -53,6 +57,44 @@ async def _bar_event_consumer(
             await scan_symbol(telegram, yf_symbol, fundamentals, unknown_events)
         except Exception:
             log.exception("Event-driven scan failed for %s", fy_symbol)
+
+
+EOD_DIGEST_HOUR = 15
+EOD_DIGEST_MINUTE = 35
+"""Wall-clock IST time at which the daily paper-tracker digest fires.
+15:35 gives the monitor (30s poll) ~5 min of margin past the 15:30
+session close to sweep any final TIMEOUT trades."""
+
+
+async def _eod_digest_task(telegram: Telegram) -> None:
+    """Sleep until 15:35 IST every trading day, then push a digest of
+    the day's paper trades to Telegram. Skipped on weekends and
+    holidays; skipped when no trades closed today (quiet days stay
+    quiet). Runs forever; cancelled cleanly on shutdown."""
+    while True:
+        now = datetime.now(tz=IST)
+        target = now.replace(
+            hour=EOD_DIGEST_HOUR, minute=EOD_DIGEST_MINUTE,
+            second=0, microsecond=0,
+        )
+        if now >= target:
+            target = target + timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        if not is_trading_day(target.date()):
+            continue
+        try:
+            msg = paper_journal.build_eod_digest()
+        except Exception:
+            log.exception("EOD digest build failed")
+            continue
+        if msg is None:
+            log.info("EOD digest: no trades closed today; skipping send")
+            continue
+        try:
+            await telegram.send(msg)
+            log.info("EOD digest sent for %s", target.date())
+        except Exception:
+            log.exception("EOD digest send failed")
 
 
 async def _fast_move_consumer(
@@ -160,6 +202,21 @@ async def main() -> None:
         name="fast-move-consumer",
     )
 
+    # Phase-5 paper-tracker monitor. Polls realtime_feed every 30s for
+    # OPEN trades and closes them on SL/TP/TIMEOUT. Stop event lets the
+    # shutdown block exit cleanly without an awkward task.cancel().
+    paper_monitor_stop = asyncio.Event()
+    paper_monitor_task = asyncio.create_task(
+        paper_tracker.monitor(paper_monitor_stop),
+        name="paper-monitor",
+    )
+
+    # Phase-5b end-of-session digest. Fires once a day at 15:35 IST.
+    eod_digest_task = asyncio.create_task(
+        _eod_digest_task(telegram),
+        name="eod-digest",
+    )
+
     try:
         while True:
             try:
@@ -179,12 +236,15 @@ async def main() -> None:
     finally:
         monitor.stop()
         commands.request_stop()
+        paper_monitor_stop.set()
         consumer_task.cancel()
         fast_move_task.cancel()
+        eod_digest_task.cancel()
         try:
             await asyncio.wait_for(
                 asyncio.gather(
-                    monitor_task, commands_task, consumer_task, fast_move_task,
+                    monitor_task, commands_task, consumer_task,
+                    fast_move_task, paper_monitor_task, eod_digest_task,
                     return_exceptions=True,
                 ),
                 timeout=5,
@@ -193,6 +253,8 @@ async def main() -> None:
             log.warning("Background tasks did not exit within 5s; cancelling")
             monitor_task.cancel()
             commands_task.cancel()
+            paper_monitor_task.cancel()
+            eod_digest_task.cancel()
 
 
 def run() -> None:
