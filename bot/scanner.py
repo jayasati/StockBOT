@@ -17,11 +17,13 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from data import filings
+from data import filings, fno_ban, index_feed
+from filters import FilterContext, apply_filters
+from filters.chain import write_audit
 from paper import tracker as paper_tracker
 
-from . import market_data, suppression
-from .config import settings
+from . import market_data
+from .config import IST, settings
 from .notifier import Telegram, format_alert
 from .scoring import StockSignals, score_stock
 from .storage import record_alert
@@ -65,11 +67,14 @@ def _build_snapshot(
             bars=bars_lower,
             daily_df=daily,
             session_date=session_date,
-            target_timeframes=("5m",),
+            # Phase-6: 15m + 60m added for MTF trend-alignment filter.
+            # 60m ADX may be None pre-warmup (intraday-only history),
+            # which the filter handles by failing-open.
+            target_timeframes=("5m", "15m", "60m"),
             # Phase-5: expanded from rsi-only so signal_indicators
             # captures enough to drive win_rate_by_indicator. RSI is
             # still the only one score_stock currently reads; the
-            # rest are journaled but not scored until Phase 7.
+            # rest are journaled and consumed by Phase-6 filters.
             indicators=("rsi", "atr", "adx", "macd"),
         )
     except Exception:
@@ -131,13 +136,28 @@ def _evaluate_symbol(
         signals.filing_title = unknown_events[symbol]
         signals.reasons.append("📢 event")
     log.debug("%s: score=%d %s", symbol, signals.score, signals.reasons)
-    if signals.score < settings.composite_threshold:
+    # Phase-6 filter chain. The inline suppression check from
+    # Phase-5b is gone — ``hard.ban_period`` now runs the same call
+    # inside the filter pass so suppression behaviour is captured
+    # in ``filter_audit`` alongside everything else.
+    ctx = FilterContext(
+        now=pd.Timestamp.now(tz=IST).to_pydatetime(),
+        daily_df=daily,
+        intraday_df=intraday,
+        nifty_pct=index_feed.get_intraday_pct(index_feed.NIFTY),
+        bank_nifty_pct=index_feed.get_intraday_pct(index_feed.BANK_NIFTY),
+        vix=index_feed.get_vix(),
+        fno_banned=fno_ban.get_banned(),
+    )
+    if apply_filters(signals, ctx) is None:
+        # Hard-killed; chain has already written the audit row.
         return None
-    blocked, reason = suppression.is_suppressed(symbol, settings.cooldown_minutes)
-    if blocked:
-        log.info("Suppressed %s: %s", symbol, reason)
+    # Confidence-based threshold (Phase-6 supersedes the score gate).
+    if signals.confidence * 100 < settings.composite_threshold:
+        write_audit(signals, alerted=False)
         return None
     _attach_sl_tp(signals, snapshot)
+    write_audit(signals, alerted=True)
     return signals
 
 
@@ -161,24 +181,30 @@ def _attach_sl_tp(
 async def _dispatch(telegram: Telegram, signals: StockSignals) -> None:
     """Persist + (maybe) Telegram + paper trade.
 
-    Three-tier gating (see idea/promptchain_noise_reduction.txt):
+    Three-tier gating under Phase-6:
 
-      score < composite_threshold       — never reaches here (filtered upstream)
-      composite_threshold <= score < telegram_threshold
-                                        — silent paper trade, no Telegram
-      score >= telegram_threshold       — paper trade + Telegram
+      confidence*100 < composite_threshold      — never reaches here
+      composite_threshold <= confidence*100 < telegram_threshold
+                                                — silent paper trade only
+      confidence*100 >= telegram_threshold      — paper trade + Telegram
 
-    ``record_alert`` lands first regardless so the cooldown row blocks
-    a concurrent path (e.g. periodic scan + bar-event back-to-back)
-    from opening a second paper trade on the same symbol."""
+    Confidence is the Phase-6 ``score × Π(soft multipliers)``;
+    threshold knobs (``composite_threshold``, ``telegram_threshold``)
+    keep their Phase-5b numeric values but compare against the
+    filtered figure now. A score-70 setup that triggers an ADX
+    counter-trend penalty (×0.4) lands at confidence×100 = 28,
+    well below the 60 floor and never reaches the user."""
+    confidence_pct = signals.confidence * 100
     record_alert(signals.symbol, signals.score, ", ".join(signals.reasons), signals.price)
-    if signals.score >= settings.telegram_threshold:
+    if confidence_pct >= settings.telegram_threshold:
         await telegram.send(format_alert(signals))
-        log.info("Alerted: %s score=%d reasons=%s",
-                 signals.symbol, signals.score, signals.reasons)
+        log.info("Alerted: %s score=%d conf=%.1f reasons=%s",
+                 signals.symbol, signals.score, confidence_pct, signals.reasons)
     else:
-        log.info("Silent paper trade: %s score=%d (below telegram_threshold=%d)",
-                 signals.symbol, signals.score, settings.telegram_threshold)
+        log.info("Silent paper trade: %s score=%d conf=%.1f "
+                 "(below telegram_threshold=%d)",
+                 signals.symbol, signals.score, confidence_pct,
+                 settings.telegram_threshold)
     try:
         paper_tracker.from_signal(signals)
     except Exception:
@@ -210,12 +236,13 @@ async def scan_symbol(
 
 
 async def scan_once(telegram: Telegram) -> None:
-    """Periodic batch scan: refresh daily/ASM/filings, score every symbol,
-    rank by score, dispatch up to ``max_alerts_per_scan``. Acts as a safety
-    net for symbols whose bar-complete events were missed (e.g. during a
-    websocket reconnect)."""
+    """Periodic batch scan: refresh daily/ASM/filings/F&O-ban, score every
+    symbol, rank by score, dispatch up to ``max_alerts_per_scan``. Acts
+    as a safety net for symbols whose bar-complete events were missed
+    (e.g. during a websocket reconnect)."""
     market_data.refresh_daily_cache_if_stale()
     await market_data.refresh_asm_gsm_if_stale()
+    await fno_ban.refresh()
 
     new_filings = await filings.poll_filings()
     for symbol, classification, title, _link in new_filings:

@@ -64,8 +64,32 @@ CREATE INDEX IF NOT EXISTS idx_health_check_ts
     ON health_log(check_name, ts DESC);
 """
 
+# Phase-6 filter audit. Every signal that reaches the filter chain
+# leaves a row here, killed or not, with the chain's decisions
+# captured as searchable text. ``kill_reasons`` is a comma-joined
+# string for cheap "grep killed by adx" queries; soft adjustments
+# go as JSON because they're tuples.
+FILTER_AUDIT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS filter_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT,
+    score INTEGER NOT NULL,
+    kill_reasons TEXT,
+    soft_adjustments_json TEXT,
+    final_confidence REAL NOT NULL,
+    alerted INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_filter_audit_symbol_ts
+    ON filter_audit(symbol, ts);
+CREATE INDEX IF NOT EXISTS idx_filter_audit_kill
+    ON filter_audit(kill_reasons);
+"""
+
 MASTER_SCHEMA = (
     ALERTS_SCHEMA + FILINGS_SCHEMA + RISK_FLAGS_SCHEMA + HEALTH_SCHEMA
+    + FILTER_AUDIT_SCHEMA
 )
 
 

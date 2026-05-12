@@ -1,0 +1,34 @@
+# Macro-event calendar consumed by filters/event.py.
+#
+# Each date below applies a confidence multiplier to alerts firing on that day:
+#   rbi_policy_days        -> 0.2  (typically 6/year: Feb, Apr, Jun, Aug, Oct, Dec)
+#   budget_days            -> 0.1  (Union Budget, typically Feb 1)
+#   election_results_days  -> 0.1  (general + major state results)
+#
+# Format: YYYY-MM-DD strings. Loader silently skips bad entries.
+# Bot restart required to pick up changes (module-level cache).
+#
+# TODO: Fill in confirmed dates from authoritative sources:
+#   RBI MPC calendar: https://rbi.org.in/Scripts/MonetaryPolicyCalendar.aspx
+#   Union Budget: https://www.indiabudget.gov.in/
+#   ECI election schedule: https://eci.gov.in/
+
+rbi_policy_days:
+  # 2026 placeholders — CONFIRM dates from RBI calendar before going live.
+  # Typical MPC slots: Feb, Apr, Jun, Aug, Oct, Dec.
+  # - 2026-02-05
+  # - 2026-04-08
+  # - 2026-06-04
+  # - 2026-08-06
+  # - 2026-10-01
+  # - 2026-12-03
+
+budget_days:
+  # Union Budget 2026-27 traditionally on Feb 1; confirm with PIB once
+  # announced.
+  # - 2026-02-01
+
+election_results_days:
+  # State-election counting days vary; fill at quarter start per ECI
+  # schedule. General Election 2024 result was 2024-06-04 — pattern as
+  # example.

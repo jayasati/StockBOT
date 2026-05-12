@@ -36,6 +36,19 @@ class StockSignals:
     tp1: float | None = None
     tp2: float | None = None
     snapshot: "IndicatorSnapshot | None" = None
+    # Phase-6 filter chain plumbing. ``side`` is inferred by
+    # :func:`score_stock` from RSI + VWAP position (bearish-momentum
+    # combination → ``SHORT``; everything else → ``LONG``). Soft and
+    # hard filters in ``filters/`` mutate the next three. ``confidence``
+    # is the post-multiplier confidence in 0..~1.10 range — Phase 5b
+    # threshold comparisons use ``confidence * 100``. ``market_context``
+    # is a free-form bag the scanner populates with nifty %, vix,
+    # bank-nifty direction, etc., so individual filters don't re-fetch.
+    side: str = "LONG"
+    kill_reasons: list[str] = field(default_factory=list)
+    soft_adjustments: list[tuple[str, float]] = field(default_factory=list)
+    confidence: float = 0.0
+    market_context: dict = field(default_factory=dict)
 
 
 def score_stock(
@@ -147,6 +160,13 @@ def score_stock(
 
     score = max(0, min(100, score))
 
+    # Phase-6 side inference. Only flag SHORT when momentum is
+    # genuinely bearish on both axes (RSI<35 AND below VWAP). The
+    # current scoring layer is long-biased — SHORT signals would still
+    # need their own scoring weights before they fire alerts; this
+    # field exists so the ADX-counter-trend filter can read it.
+    side = "SHORT" if (rsi < 35 and not above_vwap) else "LONG"
+
     return StockSignals(
         symbol=symbol,
         price=price,
@@ -157,4 +177,5 @@ def score_stock(
         pct_from_high=pct_from_high,
         score=score,
         reasons=reasons,
+        side=side,
     )

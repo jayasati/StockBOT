@@ -1242,13 +1242,20 @@ class TestDispatchGating:
        paper trade + Telegram for >= telegram_threshold."""
 
     @staticmethod
-    def _signals(score: int):
+    def _signals(score: int, confidence: float | None = None):
+        """Build a Phase-6-ready StockSignals. Default ``confidence``
+        is ``score/100`` (no filter penalty) — most existing tests
+        want this. Pass explicit ``confidence`` to test the filtered
+        gating cases."""
         from bot.scoring import StockSignals
+        if confidence is None:
+            confidence = score / 100.0
         return StockSignals(
             symbol="TEST.NS", price=100.0, rsi=65.0, volume_ratio=2.0,
             above_vwap=True, breakout=False, pct_from_high=-2.0,
             score=score, reasons=["VR 2.0x"],
             sl=97.0, tp1=104.0, tp2=110.0,
+            confidence=confidence,
         )
 
     def test_telegram_send_above_threshold(self, tmp_db, monkeypatch):
