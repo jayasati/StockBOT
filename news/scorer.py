@@ -21,7 +21,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Iterable
 
-from bot.config import DB_PATH
+from core.config import DB_PATH
 
 from . import fetcher, finbert, symbol_match
 

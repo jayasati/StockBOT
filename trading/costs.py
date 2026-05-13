@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, time
 
-from bot.schedule import SESSION_CLOSE, SESSION_OPEN
+from core.session import SESSION_CLOSE, SESSION_OPEN
 
 # ---------------------------------------------------------------------------
 # Statutory / broker rates (§3.5)

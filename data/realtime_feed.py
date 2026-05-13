@@ -47,7 +47,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from bot.schedule import (  # re-exported for legacy callers
+from core.session import (  # re-exported for legacy callers
     SESSION_LAST_BAR_OPEN,
     SESSION_OPEN,
     in_session,

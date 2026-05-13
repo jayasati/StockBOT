@@ -38,7 +38,7 @@ from typing import Any
 import httpx
 import pandas as pd
 
-from bot.config import DB_PATH, IST
+from core.config import DB_PATH, IST
 
 log = logging.getLogger("alertbot.nse")
 

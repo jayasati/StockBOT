@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from bot.schedule import SESSION_CLOSE, SESSION_OPEN  # re-exported for callers
+from core.session import SESSION_CLOSE, SESSION_OPEN  # re-exported for callers
 
 IST = ZoneInfo("Asia/Kolkata")
 

@@ -32,7 +32,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from bot.config import DB_PATH, IST
+from core.config import DB_PATH, IST
 from indicators.structure import bundle_daily_levels
 
 log = logging.getLogger("alertbot.precompute")

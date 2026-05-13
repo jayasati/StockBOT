@@ -12,7 +12,7 @@ import logging
 import threading
 import time as _time
 
-from bot.schedule import in_session
+from core.session import in_session
 
 from .auth import authenticate
 from .creds import FyersCreds, load_creds

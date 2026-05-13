@@ -27,7 +27,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Callable
 
-from bot.schedule import in_session
+from core.session import in_session
 from datetime import datetime
 from zoneinfo import ZoneInfo
 

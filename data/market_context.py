@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
-from bot.config import IST
+from core.config import IST
 
 from . import nse
 
