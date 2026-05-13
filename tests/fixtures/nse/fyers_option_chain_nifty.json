@@ -1,0 +1,82 @@
+{
+  "s": "ok",
+  "code": 200,
+  "data": {
+    "optionsChain": [
+      {
+        "symbol": "NSE:NIFTY50-INDEX",
+        "option_type": "",
+        "strike_price": 0,
+        "ltp": 23494.7,
+        "fyToken": "1010000",
+        "ex_symbol": "NIFTY"
+      },
+      {
+        "symbol": "NSE:NIFTY2451622000CE",
+        "option_type": "CE",
+        "strike_price": 22000,
+        "expiry": 1778889600,
+        "oi": 50000,
+        "oich": 1200,
+        "ltp": 1495.5,
+        "implied_volatility": 14.5
+      },
+      {
+        "symbol": "NSE:NIFTY2451622000PE",
+        "option_type": "PE",
+        "strike_price": 22000,
+        "expiry": 1778889600,
+        "oi": 80000,
+        "oich": -500,
+        "ltp": 12.3,
+        "implied_volatility": 16.1
+      },
+      {
+        "symbol": "NSE:NIFTY2451622500CE",
+        "option_type": "CE",
+        "strike_price": 22500,
+        "expiry": 1778889600,
+        "oi": 120000,
+        "oich": 5500,
+        "ltp": 1005.0,
+        "implied_volatility": 13.2
+      },
+      {
+        "symbol": "NSE:NIFTY2451622500PE",
+        "option_type": "PE",
+        "strike_price": 22500,
+        "expiry": 1778889600,
+        "oi": 95000,
+        "oich": 2200,
+        "ltp": 16.5,
+        "implied_volatility": 14.8
+      },
+      {
+        "symbol": "NSE:NIFTY2451623000CE",
+        "option_type": "CE",
+        "strike_price": 23000,
+        "expiry": 1778889600,
+        "oi": 75000,
+        "oich": 200,
+        "ltp": 510.0,
+        "implied_volatility": 12.7
+      },
+      {
+        "symbol": "NSE:NIFTY2451623000PE",
+        "option_type": "PE",
+        "strike_price": 23000,
+        "expiry": 1778889600,
+        "oi": 100000,
+        "oich": 8000,
+        "ltp": 22.5,
+        "implied_volatility": 15.5
+      }
+    ],
+    "expiryData": [
+      {"expiry": 1778889600, "date": "16-05-2026"},
+      {"expiry": 1779494400, "date": "23-05-2026"}
+    ],
+    "callOi": 245000,
+    "putOi": 275000
+  }
+}

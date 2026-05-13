@@ -19,6 +19,7 @@ import pandas as pd
 
 from data import filings, fno_ban, index_feed
 from data import precompute as daily_precompute
+from data.market_context import MarketContext, get_market_context
 from filters import FilterContext, apply_filters
 from filters.chain import write_audit
 from paper import tracker as paper_tracker
@@ -99,6 +100,7 @@ def _evaluate_symbol(
     daily: pd.DataFrame,
     fundamentals: dict[str, str],
     unknown_events: dict[str, str] | None = None,
+    market_context: MarketContext | None = None,
 ) -> StockSignals | None:
     """Score one symbol; apply filing bonus; return signals only if it
     crosses the configured threshold *and* is not suppressed. Returns None
@@ -130,6 +132,13 @@ def _evaluate_symbol(
         else None
     )
     signals = score_stock(symbol, intraday, daily, snapshot=snapshot)
+    # Phase 9: thread macro context (FII/DII, PCR, VIX, index deltas)
+    # onto the signal so ``score_market`` reads from one place. When
+    # the live fetcher hasn't populated a field yet (first scan after
+    # startup, cookie failure) the dict still carries the keys set
+    # to None and the scorer treats them as neutral.
+    if market_context is not None:
+        signals.market_context = market_context.to_dict()
     if symbol in fundamentals:
         # Directionally positive filing: an order win / dividend / PLI
         # tends to drive several ATRs of move, dwarfing microstructure
@@ -150,13 +159,33 @@ def _evaluate_symbol(
     # Phase-5b is gone — ``hard.ban_period`` now runs the same call
     # inside the filter pass so suppression behaviour is captured
     # in ``filter_audit`` alongside everything else.
+    # Phase 9: prefer the per-scan MarketContext (NSE-direct fetches,
+    # cached in ``data.nse``) and fall back to the legacy
+    # yfinance-based ``index_feed`` for any field the context didn't
+    # populate. ``index_feed`` stays as the cold-start fallback so a
+    # cookie-warmup miss doesn't silence every filter.
+    nifty_pct = (
+        market_context.nifty_change_pct
+        if market_context is not None and market_context.nifty_change_pct is not None
+        else index_feed.get_intraday_pct(index_feed.NIFTY)
+    )
+    bn_pct = (
+        market_context.banknifty_change_pct
+        if market_context is not None and market_context.banknifty_change_pct is not None
+        else index_feed.get_intraday_pct(index_feed.BANK_NIFTY)
+    )
+    vix = (
+        market_context.vix
+        if market_context is not None and market_context.vix is not None
+        else index_feed.get_vix()
+    )
     ctx = FilterContext(
         now=pd.Timestamp.now(tz=IST).to_pydatetime(),
         daily_df=daily,
         intraday_df=intraday,
-        nifty_pct=index_feed.get_intraday_pct(index_feed.NIFTY),
-        bank_nifty_pct=index_feed.get_intraday_pct(index_feed.BANK_NIFTY),
-        vix=index_feed.get_vix(),
+        nifty_pct=nifty_pct,
+        bank_nifty_pct=bn_pct,
+        vix=vix,
         fno_banned=fno_ban.get_banned(),
     )
     if apply_filters(signals, ctx) is None:
@@ -249,19 +278,32 @@ async def scan_symbol(
     symbol: str,
     fundamentals: dict[str, str],
     unknown_events: dict[str, str] | None = None,
+    market_context: MarketContext | None = None,
 ) -> None:
     """Event-driven scan for a single symbol. Called from the bar-event
     consumer when a 5-min bar closes. No max-alerts cap — alerts arrive
     one-at-a-time as bars complete, so spam control is handled by the
-    cooldown row alone."""
+    cooldown row alone.
+
+    Phase 9: ``market_context`` is fetched if the caller didn't supply
+    one. Inside the bar-event consumer that happens once per bar
+    rather than once per scan tick, but the 60s in-memory cache in
+    ``data.nse`` deduplicates the underlying HTTP work."""
     if symbol not in WATCHLIST:
         return
     intraday_data = market_data.fetch_intraday([symbol])
     if symbol not in intraday_data:
         return
     daily = market_data._daily_cache.get(symbol, pd.DataFrame())
+    if market_context is None:
+        try:
+            market_context = await get_market_context()
+        except Exception:
+            log.exception("get_market_context failed; scanning without it")
+            market_context = None
     signals = _evaluate_symbol(
         symbol, intraday_data[symbol], daily, fundamentals, unknown_events,
+        market_context=market_context,
     )
     if signals is None:
         return
@@ -283,6 +325,21 @@ async def scan_once(telegram: Telegram) -> None:
     fundamentals = filings.recent_high_priority(60)
     unknown_events = filings.recent_unknown_events(60)
 
+    # Phase 9: fetch macro context ONCE per scan tick; pass it
+    # through to every per-symbol evaluation. The 60s in-memory
+    # cache inside data.nse also coalesces concurrent fetches.
+    try:
+        market_context = await get_market_context()
+        log.info(
+            "MarketContext: nifty=%s%% bn=%s%% vix=%s fii=%s dii=%s pcr=%s",
+            market_context.nifty_change_pct, market_context.banknifty_change_pct,
+            market_context.vix, market_context.fii_net_cr,
+            market_context.dii_net_cr, market_context.pcr_nifty,
+        )
+    except Exception:
+        log.exception("get_market_context failed; scanning without it")
+        market_context = None
+
     log.info("Scanning %d symbols...", len(WATCHLIST))
     intraday_data = market_data.fetch_intraday(WATCHLIST)
     if not intraday_data:
@@ -296,6 +353,7 @@ async def scan_once(telegram: Telegram) -> None:
         daily = market_data._daily_cache.get(symbol, pd.DataFrame())
         signals = _evaluate_symbol(
             symbol, intraday_data[symbol], daily, fundamentals, unknown_events,
+            market_context=market_context,
         )
         if signals is not None:
             candidates.append(signals)

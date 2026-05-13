@@ -106,9 +106,25 @@ CREATE INDEX IF NOT EXISTS idx_daily_levels_date
     ON daily_levels(session_date);
 """
 
+# Phase-9 NSE replay cache. Every successful response from
+# ``data.nse._get_json`` lands here as a JSON blob so a missed scan
+# can be re-played offline (and so test fixtures can be captured from
+# real responses). ``kind`` is the endpoint key plus a param signature
+# (e.g. ``option_chain:symbol=NIFTY``).
+NSE_SNAPSHOTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS nse_snapshots (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_nse_snapshots_kind_ts
+    ON nse_snapshots(kind, ts DESC);
+"""
+
 MASTER_SCHEMA = (
     ALERTS_SCHEMA + FILINGS_SCHEMA + RISK_FLAGS_SCHEMA + HEALTH_SCHEMA
-    + FILTER_AUDIT_SCHEMA + DAILY_LEVELS_SCHEMA
+    + FILTER_AUDIT_SCHEMA + DAILY_LEVELS_SCHEMA + NSE_SNAPSHOTS_SCHEMA
 )
 
 

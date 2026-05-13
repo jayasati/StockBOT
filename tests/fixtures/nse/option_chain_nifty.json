@@ -1,0 +1,61 @@
+{
+  "records": {
+    "expiryDates": ["16-May-2026", "23-May-2026"],
+    "data": [
+      {
+        "strikePrice": 22000,
+        "expiryDate": "16-May-2026",
+        "CE": {
+          "openInterest": 50000,
+          "changeinOpenInterest": 1200,
+          "impliedVolatility": 14.5
+        },
+        "PE": {
+          "openInterest": 80000,
+          "changeinOpenInterest": -500,
+          "impliedVolatility": 16.1
+        }
+      },
+      {
+        "strikePrice": 22500,
+        "expiryDate": "16-May-2026",
+        "CE": {
+          "openInterest": 120000,
+          "changeinOpenInterest": 5500,
+          "impliedVolatility": 13.2
+        },
+        "PE": {
+          "openInterest": 95000,
+          "changeinOpenInterest": 2200,
+          "impliedVolatility": 14.8
+        }
+      },
+      {
+        "strikePrice": 23000,
+        "expiryDate": "16-May-2026",
+        "CE": {
+          "openInterest": 75000,
+          "changeinOpenInterest": 200,
+          "impliedVolatility": 12.7
+        },
+        "PE": {
+          "openInterest": 100000,
+          "changeinOpenInterest": 8000,
+          "impliedVolatility": 15.5
+        }
+      },
+      {
+        "strikePrice": 22500,
+        "expiryDate": "23-May-2026",
+        "CE": {
+          "openInterest": 30000,
+          "impliedVolatility": 13.5
+        },
+        "PE": {
+          "openInterest": 40000,
+          "impliedVolatility": 14.2
+        }
+      }
+    ]
+  }
+}

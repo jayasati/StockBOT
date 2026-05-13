@@ -65,9 +65,11 @@ DEFAULTS: dict[str, Any] = {
             "at_orb": 0.30,
         },
         "market": {
-            "nifty_direction": 0.40,
-            "bank_nifty_direction": 0.35,
-            "vix_regime": 0.25,
+            "nifty_direction": 0.30,
+            "bank_nifty_direction": 0.20,
+            "vix_regime": 0.15,
+            "fii_flow": 0.20,
+            "pcr": 0.15,
         },
         "news": {
             "filing_signal": 1.0,

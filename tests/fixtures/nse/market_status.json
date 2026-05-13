@@ -1,0 +1,27 @@
+{
+  "marketState": [
+    {
+      "market": "Capital Market",
+      "marketStatus": "Open",
+      "tradeDate": "13-May-2026 10:00",
+      "index": "NIFTY 50",
+      "last": 22513.7
+    },
+    {
+      "market": "Commodity Market",
+      "marketStatus": "Open"
+    },
+    {
+      "market": "Currency",
+      "marketStatus": "Open"
+    },
+    {
+      "market": "Debt Market",
+      "marketStatus": "Open"
+    },
+    {
+      "market": "currencyfuture",
+      "marketStatus": "Open"
+    }
+  ]
+}

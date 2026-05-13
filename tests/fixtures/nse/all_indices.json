@@ -1,0 +1,30 @@
+{
+  "data": [
+    {
+      "index": "NIFTY 50",
+      "last": 22513.7,
+      "previousClose": 22425.0,
+      "percentChange": 0.40,
+      "variation": 88.7
+    },
+    {
+      "index": "NIFTY BANK",
+      "last": 48125.5,
+      "previousClose": 48000.0,
+      "percentChange": 0.26,
+      "variation": 125.5
+    },
+    {
+      "index": "INDIA VIX",
+      "last": 13.45,
+      "previousClose": 14.10,
+      "percentChange": -4.61
+    },
+    {
+      "index": "NIFTY IT",
+      "last": 37000.0,
+      "previousClose": 36800.0,
+      "percentChange": 0.54
+    }
+  ]
+}

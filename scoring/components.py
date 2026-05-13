@@ -616,11 +616,68 @@ def score_market(
     else:
         vix_score = 20.0
 
+    # Phase 9: FII net flow (₹ crore). Net foreign buying is bullish
+    # for LONG, net selling bullish for SHORT. The thresholds reflect
+    # what NSE-India considers a "meaningful" daily flow: ±₹500cr
+    # nets out into the noise; ±₹2000cr is a session-defining flow.
+    fii = market_ctx.get("fii_net_cr")
+    if fii is None:
+        fii_score = None
+    elif bull:
+        if fii >= 2000:
+            fii_score = 100.0
+        elif fii >= 500:
+            fii_score = 80.0
+        elif fii >= -500:
+            fii_score = 50.0
+        elif fii >= -2000:
+            fii_score = 20.0
+        else:
+            fii_score = 0.0
+    else:
+        if fii <= -2000:
+            fii_score = 100.0
+        elif fii <= -500:
+            fii_score = 80.0
+        elif fii <= 500:
+            fii_score = 50.0
+        elif fii <= 2000:
+            fii_score = 20.0
+        else:
+            fii_score = 0.0
+
+    # Phase 9: Put-Call Ratio on NIFTY. > 1.2 is conventionally "put-heavy"
+    # — contrarian-bullish for LONGs (oversold sentiment, mean-reversion
+    # setups); < 0.7 is call-heavy — contrarian-bearish for LONGs.
+    pcr = market_ctx.get("pcr_nifty")
+    if pcr is None:
+        pcr_score = None
+    elif bull:
+        if pcr >= 1.2:
+            pcr_score = 100.0    # oversold → favours longs
+        elif pcr >= 0.9:
+            pcr_score = 70.0
+        elif pcr >= 0.7:
+            pcr_score = 40.0
+        else:
+            pcr_score = 20.0     # call-heavy → frothy
+    else:
+        if pcr <= 0.7:
+            pcr_score = 100.0    # call-heavy → favours shorts
+        elif pcr <= 0.9:
+            pcr_score = 70.0
+        elif pcr <= 1.2:
+            pcr_score = 40.0
+        else:
+            pcr_score = 20.0
+
     return _normalise(
         {
             "nifty_direction": nifty_score,
             "bank_nifty_direction": bn_score,
             "vix_regime": vix_score,
+            "fii_flow": fii_score,
+            "pcr": pcr_score,
         },
         weights,
     )
