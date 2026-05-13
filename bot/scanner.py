@@ -21,6 +21,7 @@ from data import filings, fno_ban, index_feed
 from filters import FilterContext, apply_filters
 from filters.chain import write_audit
 from paper import tracker as paper_tracker
+import scoring as scoring_engine
 
 from . import market_data
 from .config import IST, settings
@@ -71,11 +72,19 @@ def _build_snapshot(
             # 60m ADX may be None pre-warmup (intraday-only history),
             # which the filter handles by failing-open.
             target_timeframes=("5m", "15m", "60m"),
-            # Phase-5: expanded from rsi-only so signal_indicators
-            # captures enough to drive win_rate_by_indicator. RSI is
-            # still the only one score_stock currently reads; the
-            # rest are journaled and consumed by Phase-6 filters.
-            indicators=("rsi", "atr", "adx", "macd"),
+            # Phase-7: expanded to cover every indicator the weighted
+            # scorer pulls from the snapshot. Indicators that aren't
+            # in this tuple still resolve to None in the scorer (and
+            # contribute neutrally), so the bot is robust to a
+            # narrowing of this list — but the more keys we populate
+            # the richer the audit row.
+            indicators=(
+                "rsi", "atr", "adx", "macd",
+                "stochastic", "mfi", "cci",
+                "supertrend", "bollinger", "cmf",
+                "volume_surge_ratio", "ttm_squeeze",
+                "pivot_points", "previous_day_hlc", "opening_range",
+            ),
         )
     except Exception:
         log.exception("compute_all failed for %s; falling back to legacy RSI",
@@ -152,8 +161,23 @@ def _evaluate_symbol(
     if apply_filters(signals, ctx) is None:
         # Hard-killed; chain has already written the audit row.
         return None
-    # Confidence-based threshold (Phase-6 supersedes the score gate).
-    if signals.confidence * 100 < settings.composite_threshold:
+    # Phase-7: weighted scoring overrides the Phase-6 confidence.
+    # ``score_signal`` consumes the soft_adjustments populated by
+    # the chain so the multiplier product is identical. We rescale
+    # ``confidence`` back into 0..1 so the long-standing
+    # ``signals.confidence * 100`` convention used elsewhere (paper
+    # tracker, notifier, swing) keeps working byte-identical.
+    breakdown = scoring_engine.score_signal(signals)
+    signals.confidence = breakdown.final / 100.0
+    signals.score_breakdown = breakdown.as_dict()
+    # Alert gate: the scoring.yaml ``alert_threshold`` is the new
+    # source of truth; ``settings.composite_threshold`` survives as
+    # the env-overridable fallback so an operator can still tighten
+    # the gate without touching the yaml.
+    threshold = scoring_engine.get_alert_threshold(
+        default=settings.composite_threshold,
+    )
+    if breakdown.final < threshold:
         write_audit(signals, alerted=False)
         return None
     _attach_sl_tp(signals, snapshot)

@@ -49,6 +49,13 @@ class StockSignals:
     soft_adjustments: list[tuple[str, float]] = field(default_factory=list)
     confidence: float = 0.0
     market_context: dict = field(default_factory=dict)
+    # Phase-7 weighted scoring breakdown. Set by ``scoring.score_signal``
+    # after the filter chain runs so the multiplier product is final.
+    # Shape: ScoreBreakdown.as_dict() — keys ``components`` /
+    # ``weighted`` / ``base`` / ``multiplier_product`` / ``final`` /
+    # ``alert_threshold``. None on pre-Phase-7 call sites (backtest,
+    # swing) that haven't been re-plumbed yet.
+    score_breakdown: dict | None = None
 
 
 def score_stock(

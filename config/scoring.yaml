@@ -1,0 +1,61 @@
+# Phase-7 weighted-confidence configuration. The scanner reloads this
+# file on every scan tick (mtime-based cache invalidation) so weight
+# tuning does not require a bot restart.
+#
+# `weights`           — top-level category weights. Must sum to 1.0
+#                       for the master score to stay in [0, 100], but
+#                       the loader normalises internally so a partial
+#                       sum still produces a comparable number.
+# `component_weights` — per-category sub-criteria weights. Each
+#                       component scorer normalises its sub-scores by
+#                       the local weight sum so output stays in
+#                       [0, 100] even if you zero a sub-criterion.
+# `alert_threshold`   — final score (post-multipliers) at or above
+#                       which an alert fires. Default 85 matches the
+#                       brainstorm spec; the bot falls back to
+#                       settings.composite_threshold if this key is
+#                       missing.
+
+weights:
+  trend:      0.25
+  momentum:   0.20
+  volume:     0.15
+  volatility: 0.10
+  structure:  0.10
+  market:     0.15
+  news:       0.05
+
+component_weights:
+  trend:
+    vwap_position:  0.25
+    ema_stack:      0.20
+    supertrend:     0.20
+    adx:            0.15
+    price_vs_pivot: 0.20
+  momentum:
+    rsi_zone:   0.30
+    macd_cross: 0.30
+    stochastic: 0.15
+    cci:        0.15
+    mfi:        0.10
+  volume:
+    volume_ratio:       0.40
+    cmf:                0.25
+    volume_surge_ratio: 0.20
+    vwap_above:         0.15
+  volatility:
+    atr_normalized:     0.40
+    bollinger_position: 0.35
+    ttm_squeeze:        0.25
+  structure:
+    near_pivot:    0.35
+    at_support_resistance: 0.35
+    at_orb:        0.30
+  market:
+    nifty_direction:      0.40
+    bank_nifty_direction: 0.35
+    vix_regime:           0.25
+  news:
+    filing_signal: 1.0
+
+alert_threshold: 85

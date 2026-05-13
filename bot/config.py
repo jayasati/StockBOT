@@ -44,6 +44,13 @@ class Settings:
     # Cap alerts per scan to prevent flood
     max_alerts_per_scan: int = 15
 
+    # Liquidity floor for the Phase-6 hard filter, expressed as 20-day
+    # average daily RUPEE turnover (₹crore). Replaces the original
+    # share-count floor, which unfairly killed high-priced names — MRF
+    # at ~7,000 shares/day is ₹86cr/day turnover, well inside any
+    # reasonable liquidity definition but well below a 500k-share floor.
+    liquidity_min_turnover_cr: float = 5.0
+
 
 settings = Settings(
     telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
@@ -52,4 +59,5 @@ settings = Settings(
     telegram_threshold=int(os.getenv("TELEGRAM_THRESHOLD", "80")),
     cooldown_minutes=int(os.getenv("COOLDOWN_MINUTES", "60")),
     scan_interval_seconds=int(os.getenv("SCAN_INTERVAL_SECONDS", "300")),
+    liquidity_min_turnover_cr=float(os.getenv("LIQUIDITY_MIN_TURNOVER_CR", "5.0")),
 )

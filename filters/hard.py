@@ -30,9 +30,17 @@ MARKET_OPEN_END = _time(15, 0)
 Tighter than the broker's auto-squareoff (15:15-15:20) to leave
 slack for paper-trade rule evaluation."""
 
-LIQUIDITY_MIN_AVG_VOL = 500_000
-"""20-day average volume floor. Below this, slippage is unbearable
-even for paper math."""
+LIQUIDITY_MIN_TURNOVER_CR = 5.0
+"""20-day average daily RUPEE turnover floor, in crores. Module-level
+default; the filter reads ``settings.liquidity_min_turnover_cr`` at
+call time so the env var ``LIQUIDITY_MIN_TURNOVER_CR`` is the
+operator-facing knob.
+
+Share-count floors penalise high-priced names — MRF at ~7,000
+shares/day is ₹86cr/day turnover, very liquid in money terms but
+nuked by any reasonable share-count threshold. The rupee metric
+matches how slippage actually scales (depth in rupees, not in
+shares)."""
 
 
 # ---------------------------------------------------------------------------
@@ -52,19 +60,36 @@ def market_open(signals: "StockSignals", ctx: "FilterContext") -> str | None:
 # ---------------------------------------------------------------------------
 
 def liquidity(signals: "StockSignals", ctx: "FilterContext") -> str | None:
-    """Kill if 20-day average daily volume is below the floor.
+    """Kill if 20-day average daily RUPEE turnover is below the floor.
 
-    Fail-open on missing data: if ``ctx.daily_df`` is empty or
-    None (e.g. the daily cache hasn't been seeded), we DON'T kill.
-    That avoids accidental silence on every symbol after a cache
-    refresh failure."""
+    Turnover = ``mean(Volume × Close)`` over the last 20 daily bars,
+    divided by 1e7 to express in crores. Compared against
+    ``settings.liquidity_min_turnover_cr`` (default 5.0, env-tunable
+    via ``LIQUIDITY_MIN_TURNOVER_CR``).
+
+    Fail-open on missing data: empty/missing daily_df, missing
+    Close/Volume columns, or NaN turnover all return None so a
+    cache miss can't silence the whole universe."""
+    from bot.config import settings
+
     if ctx.daily_df is None or ctx.daily_df.empty:
         return None
-    avg = ctx.daily_df["Volume"].tail(20).mean()
-    if not isinstance(avg, (int, float)) or avg != avg:  # NaN check
+    tail = ctx.daily_df.tail(20)
+    if "Volume" not in tail.columns or "Close" not in tail.columns:
         return None
-    if avg < LIQUIDITY_MIN_AVG_VOL:
-        return f"liquidity (20d avg vol {avg:,.0f} < {LIQUIDITY_MIN_AVG_VOL:,})"
+    try:
+        turnover = float((tail["Volume"] * tail["Close"]).mean())
+    except (TypeError, ValueError):
+        return None
+    if turnover != turnover:  # NaN
+        return None
+    turnover_cr = turnover / 1e7
+    threshold_cr = float(settings.liquidity_min_turnover_cr)
+    if turnover_cr < threshold_cr:
+        return (
+            f"liquidity (20d avg turnover ₹{turnover_cr:,.2f}cr "
+            f"< ₹{threshold_cr:,.2f}cr)"
+        )
     return None
 
 

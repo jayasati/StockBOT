@@ -79,7 +79,9 @@ CREATE TABLE IF NOT EXISTS filter_audit (
     kill_reasons TEXT,
     soft_adjustments_json TEXT,
     final_confidence REAL NOT NULL,
-    alerted INTEGER NOT NULL
+    alerted INTEGER NOT NULL,
+    components_json TEXT,
+    final_score REAL
 );
 CREATE INDEX IF NOT EXISTS idx_filter_audit_symbol_ts
     ON filter_audit(symbol, ts);
@@ -97,8 +99,26 @@ def init_db() -> None:
     """Create every persistent table the bot writes to. Idempotent."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.executescript(MASTER_SCHEMA)
+        _migrate_filter_audit(conn)
     # Phase-5 paper-tracker tables live in a sibling package so the SQL
     # stays next to its writers. Local import avoids a circular path
     # through ``bot/__init__.py``.
     from paper.schema import ensure_paper_schema
     ensure_paper_schema()
+
+
+def _migrate_filter_audit(conn: sqlite3.Connection) -> None:
+    """Phase-7 schema-extension migration. ``filter_audit`` predates
+    the components/final_score columns; add them in place when the
+    table already exists from a pre-Phase-7 init. CREATE TABLE IF
+    NOT EXISTS does not retrofit columns to an existing table, so
+    we ALTER on a per-column basis with PRAGMA introspection. Newly
+    added columns default to NULL — rows written before Phase-7
+    keep their NULL semantics."""
+    existing_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(filter_audit)")
+    }
+    if "components_json" not in existing_cols:
+        conn.execute("ALTER TABLE filter_audit ADD COLUMN components_json TEXT")
+    if "final_score" not in existing_cols:
+        conn.execute("ALTER TABLE filter_audit ADD COLUMN final_score REAL")

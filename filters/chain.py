@@ -136,6 +136,11 @@ def write_audit(signals: "StockSignals", *, alerted: bool) -> None:
     """Append a row to ``filter_audit``. Caller decides ``alerted``
     based on whether the signal ultimately reached _dispatch.
 
+    Phase-7 columns ``components_json`` + ``final_score`` are pulled
+    from ``signals.score_breakdown`` when present (set by the
+    scanner after :func:`scoring.score_signal`). Hard-killed signals
+    short-circuit before scoring, so those rows leave both NULL.
+
     Best-effort: a DB-write failure here must NOT break the scan
     loop. Errors are logged and swallowed."""
     from bot.config import DB_PATH
@@ -144,13 +149,24 @@ def write_audit(signals: "StockSignals", *, alerted: bool) -> None:
         [[name, mult] for name, mult in signals.soft_adjustments]
     )
     kill_str = ", ".join(signals.kill_reasons) if signals.kill_reasons else None
+
+    breakdown = signals.score_breakdown
+    if breakdown is None:
+        components_json = None
+        final_score: float | None = None
+    else:
+        components_json = json.dumps(breakdown.get("components") or {})
+        raw_final = breakdown.get("final")
+        final_score = float(raw_final) if raw_final is not None else None
+
     try:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
                 "INSERT INTO filter_audit "
                 "(ts, symbol, side, score, kill_reasons, "
-                " soft_adjustments_json, final_confidence, alerted) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " soft_adjustments_json, final_confidence, alerted, "
+                " components_json, final_score) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now(timezone.utc).isoformat(),
                     signals.symbol,
@@ -160,6 +176,8 @@ def write_audit(signals: "StockSignals", *, alerted: bool) -> None:
                     soft_json,
                     signals.confidence,
                     1 if alerted else 0,
+                    components_json,
+                    final_score,
                 ),
             )
     except Exception:

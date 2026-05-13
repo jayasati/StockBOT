@@ -456,18 +456,46 @@ class TestHardFilters:
         assert market_open(_stub_signals(), ctx) is None
 
     def test_liquidity_kills_thin_stocks(self):
+        """100k shares/day × ₹10 = ₹0.1cr/day turnover → kill at 5cr floor."""
         from filters.hard import liquidity
-        daily = pd.DataFrame({"Volume": [100_000] * 20})
+        daily = pd.DataFrame({
+            "Volume": [100_000] * 20, "Close": [10.0] * 20,
+        })
         ctx = _stub_ctx(daily_df=daily)
         result = liquidity(_stub_signals(), ctx)
         assert result is not None
         assert "liquidity" in result
 
     def test_liquidity_passes_liquid_stocks(self):
+        """2M shares/day × ₹500 = ₹100cr/day → pass."""
         from filters.hard import liquidity
-        daily = pd.DataFrame({"Volume": [2_000_000] * 20})
+        daily = pd.DataFrame({
+            "Volume": [2_000_000] * 20, "Close": [500.0] * 20,
+        })
         ctx = _stub_ctx(daily_df=daily)
         assert liquidity(_stub_signals(), ctx) is None
+
+    def test_liquidity_passes_high_priced_low_volume(self):
+        """The MRF case: 7,000 shares/day × ₹150,000 = ₹105cr/day. A
+        share-count filter killed this; a rupee-turnover filter must
+        not. This is the regression test for the Phase-7 rewrite."""
+        from filters.hard import liquidity
+        daily = pd.DataFrame({
+            "Volume": [7_000] * 20, "Close": [150_000.0] * 20,
+        })
+        ctx = _stub_ctx(daily_df=daily)
+        assert liquidity(_stub_signals(), ctx) is None
+
+    def test_liquidity_kills_thin_high_priced(self):
+        """3MINDIA-style: high price doesn't rescue genuinely thin
+        names. 100 shares/day × ₹30k = ₹0.3cr → still killed."""
+        from filters.hard import liquidity
+        daily = pd.DataFrame({
+            "Volume": [100] * 20, "Close": [30_000.0] * 20,
+        })
+        ctx = _stub_ctx(daily_df=daily)
+        result = liquidity(_stub_signals(), ctx)
+        assert result is not None
 
     def test_liquidity_fails_open_no_data(self):
         """No daily data → don't kill (avoid silencing every symbol
@@ -475,6 +503,29 @@ class TestHardFilters:
         from filters.hard import liquidity
         ctx = _stub_ctx()  # daily_df=None by default
         assert liquidity(_stub_signals(), ctx) is None
+
+    def test_liquidity_fails_open_no_close_column(self):
+        """Daily df missing Close column (corrupted cache) → fail open."""
+        from filters.hard import liquidity
+        daily = pd.DataFrame({"Volume": [1_000] * 20})  # no Close
+        ctx = _stub_ctx(daily_df=daily)
+        assert liquidity(_stub_signals(), ctx) is None
+
+    def test_liquidity_threshold_is_tunable(self, monkeypatch):
+        """Bumping settings.liquidity_min_turnover_cr changes the gate
+        without code change — the env-var path operators rely on."""
+        from bot.config import settings
+        from filters.hard import liquidity
+        daily = pd.DataFrame({
+            "Volume": [100_000] * 20, "Close": [1_000.0] * 20,
+        })  # ₹10cr/day turnover
+        ctx = _stub_ctx(daily_df=daily)
+        # Default floor 5cr → passes.
+        monkeypatch.setattr(settings, "liquidity_min_turnover_cr", 5.0)
+        assert liquidity(_stub_signals(), ctx) is None
+        # Raise floor to 20cr → kills the same stock.
+        monkeypatch.setattr(settings, "liquidity_min_turnover_cr", 20.0)
+        assert liquidity(_stub_signals(), ctx) is not None
 
     def test_ban_period_delegates_to_suppression(self, tmp_db, monkeypatch):
         """Filter is a single delegation — proves the wiring."""
