@@ -20,7 +20,7 @@ import logging
 from datetime import datetime, timedelta
 
 import fyers_client
-from data import filings, realtime_feed
+from data import filings, precompute, realtime_feed
 from data.fast_mover import FastMove, FastMover, format_fast_move
 from data.trading_calendar import is_trading_day
 
@@ -57,6 +57,49 @@ async def _bar_event_consumer(
             await scan_symbol(telegram, yf_symbol, fundamentals, unknown_events)
         except Exception:
             log.exception("Event-driven scan failed for %s", fy_symbol)
+
+
+MORNING_PRECOMPUTE_HOUR = 9
+MORNING_PRECOMPUTE_MINUTE = 0
+"""09:00 IST — 15 minutes before the cash-equity session opens, which
+leaves plenty of margin for yfinance refresh + per-symbol bundle
+computation across the full watchlist before the first scan tick."""
+
+
+async def _morning_precompute_task(telegram: Telegram) -> None:
+    """Once a day at 09:00 IST, populate ``daily_levels`` for every
+    watchlist symbol. Skipped on weekends and holidays. On startup
+    the task fires immediately (without waiting for next 09:00) if
+    today's row is missing, so a mid-day bot restart doesn't leave
+    the structure scorer empty until tomorrow."""
+    # Initial-catch-up: if the bot starts after 09:00 on a trading
+    # day and the table is empty for today, run once right away.
+    today = datetime.now(tz=IST).date()
+    if is_trading_day(today):
+        try:
+            from bot.watchlist import WATCHLIST as _WL
+            first_sym = next(iter(_WL), None)
+            if first_sym is not None and precompute.get_daily_levels(first_sym, today) is None:
+                log.info("Morning precompute: startup catch-up for %s", today)
+                await precompute.run_morning_compute(telegram=telegram)
+        except Exception:
+            log.exception("Morning precompute startup catch-up failed")
+
+    while True:
+        now = datetime.now(tz=IST)
+        target = now.replace(
+            hour=MORNING_PRECOMPUTE_HOUR, minute=MORNING_PRECOMPUTE_MINUTE,
+            second=0, microsecond=0,
+        )
+        if now >= target:
+            target = target + timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        if not is_trading_day(target.date()):
+            continue
+        try:
+            await precompute.run_morning_compute(telegram=telegram)
+        except Exception:
+            log.exception("Morning precompute run failed")
 
 
 EOD_DIGEST_HOUR = 15
@@ -217,6 +260,13 @@ async def main() -> None:
         name="eod-digest",
     )
 
+    # Phase-8 morning structure-level precompute. Fires once a day
+    # at 09:00 IST plus a startup catch-up.
+    morning_precompute_task = asyncio.create_task(
+        _morning_precompute_task(telegram),
+        name="morning-precompute",
+    )
+
     try:
         while True:
             try:
@@ -240,11 +290,13 @@ async def main() -> None:
         consumer_task.cancel()
         fast_move_task.cancel()
         eod_digest_task.cancel()
+        morning_precompute_task.cancel()
         try:
             await asyncio.wait_for(
                 asyncio.gather(
                     monitor_task, commands_task, consumer_task,
                     fast_move_task, paper_monitor_task, eod_digest_task,
+                    morning_precompute_task,
                     return_exceptions=True,
                 ),
                 timeout=5,
@@ -255,6 +307,7 @@ async def main() -> None:
             commands_task.cancel()
             paper_monitor_task.cancel()
             eod_digest_task.cancel()
+            morning_precompute_task.cancel()
 
 
 def run() -> None:

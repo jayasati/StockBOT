@@ -43,6 +43,7 @@ def score_signal(
     signal: "StockSignals",
     *,
     config: dict[str, Any] | None = None,
+    daily_levels: dict[str, Any] | None = None,
 ) -> ScoreBreakdown:
     """Compute the Phase-7 weighted confidence score for ``signal``.
 
@@ -58,7 +59,12 @@ def score_signal(
 
     ``config`` is normally ``None`` — the loader pulls scoring.yaml
     with mtime-cache invalidation. Tests can inject a config dict
-    directly to bypass disk."""
+    directly to bypass disk.
+
+    ``daily_levels`` is the Phase-8 precomputed structure bundle for
+    the signal's symbol. The scanner reads it from the daily_levels
+    table once per signal; tests can pass it directly. When None,
+    score_structure falls back to the snapshot.values path."""
     cfg = config if config is not None else load_config()
 
     weights = cfg.get("weights", {}) or {}
@@ -99,6 +105,7 @@ def score_signal(
             signal.price,
             signal.side,
             weights=cw.get("structure", {}),
+            daily_levels=daily_levels,
         ),
         "market": comp.score_market(
             market_ctx,

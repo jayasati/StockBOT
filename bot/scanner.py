@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from data import filings, fno_ban, index_feed
+from data import precompute as daily_precompute
 from filters import FilterContext, apply_filters
 from filters.chain import write_audit
 from paper import tracker as paper_tracker
@@ -167,7 +168,15 @@ def _evaluate_symbol(
     # ``confidence`` back into 0..1 so the long-standing
     # ``signals.confidence * 100`` convention used elsewhere (paper
     # tracker, notifier, swing) keeps working byte-identical.
-    breakdown = scoring_engine.score_signal(signals)
+    # Phase 8: daily structure levels (pivot/CPR/fib/PDH/PDL) are
+    # precomputed once at 09:00 IST and cached in ``daily_levels``.
+    # One indexed read per scored signal; None when the precompute
+    # hasn't populated the symbol yet (the scorer treats structure
+    # as neutral in that case).
+    daily_levels = daily_precompute.get_daily_levels(
+        signals.symbol, session_date,
+    ) if session_date is not None else None
+    breakdown = scoring_engine.score_signal(signals, daily_levels=daily_levels)
     signals.confidence = breakdown.final / 100.0
     signals.score_breakdown = breakdown.as_dict()
     # Alert gate: the scoring.yaml ``alert_threshold`` is the new

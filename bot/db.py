@@ -89,9 +89,26 @@ CREATE INDEX IF NOT EXISTS idx_filter_audit_kill
     ON filter_audit(kill_reasons);
 """
 
+# Phase-8 daily structure-level cache. Precomputed once at 09:00 IST
+# by ``data.precompute.run_morning_compute``; read by the scoring
+# engine during the day. ``levels_json`` carries the full bundle
+# (pivot/CPR/fib/PDH/PDL/PDC) so adding new level types doesn't need
+# a schema change.
+DAILY_LEVELS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS daily_levels (
+    symbol       TEXT NOT NULL,
+    session_date TEXT NOT NULL,
+    levels_json  TEXT NOT NULL,
+    computed_at  TEXT NOT NULL,
+    PRIMARY KEY (symbol, session_date)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_levels_date
+    ON daily_levels(session_date);
+"""
+
 MASTER_SCHEMA = (
     ALERTS_SCHEMA + FILINGS_SCHEMA + RISK_FLAGS_SCHEMA + HEALTH_SCHEMA
-    + FILTER_AUDIT_SCHEMA
+    + FILTER_AUDIT_SCHEMA + DAILY_LEVELS_SCHEMA
 )
 
 

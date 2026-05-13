@@ -424,20 +424,52 @@ def score_structure(
     side: str,
     *,
     weights: dict[str, float],
+    daily_levels: dict[str, Any] | None = None,
 ) -> float:
+    """Structure score (pivot / S-R / opening-range).
+
+    Phase 8: when ``daily_levels`` is supplied (the precompute bundle
+    from ``data.precompute.get_daily_levels``), its pivot + PDH/PDL
+    values take precedence over the per-tick snapshot values. The
+    snapshot path remains a fallback for symbols that the 09:00
+    precompute couldn't populate (missing daily data, holidays,
+    delistings)."""
     bull = (side == "LONG")
+    dl_pivot = (daily_levels or {}).get("pivot") if daily_levels else None
+
     # near_pivot — within 0.5% of pivot/r1/s1 (for LONG, near s1 or
     # above pivot toward r1 is bullish; for SHORT, the mirror)
     if price is None:
         near_score = None
     else:
         levels: list[float] = []
-        for key in ("pivot_classic", "pivot_classic_r1",
-                    "pivot_classic_s1", "pivot_classic_r2",
-                    "pivot_classic_s2"):
-            v = _val(snapshot, key)
-            if v is not None:
-                levels.append(v)
+        if isinstance(dl_pivot, dict):
+            for key in ("pivot", "r1", "s1", "r2", "s2"):
+                v = dl_pivot.get(key)
+                if v is not None:
+                    try:
+                        levels.append(float(v))
+                    except (TypeError, ValueError):
+                        pass
+        else:
+            for key in ("pivot_classic", "pivot_classic_r1",
+                        "pivot_classic_s1", "pivot_classic_r2",
+                        "pivot_classic_s2"):
+                v = _val(snapshot, key)
+                if v is not None:
+                    levels.append(v)
+        # CPR proximity counts toward the same "near a structural
+        # line" intuition: tc/bc are reliable intraday flip points,
+        # especially on narrow-CPR days.
+        if daily_levels and isinstance(daily_levels.get("cpr"), dict):
+            cpr_d = daily_levels["cpr"]
+            for key in ("tc", "bc"):
+                v = cpr_d.get(key)
+                if v is not None:
+                    try:
+                        levels.append(float(v))
+                    except (TypeError, ValueError):
+                        pass
         if not levels:
             near_score = None
         else:
@@ -454,8 +486,12 @@ def score_structure(
     if price is None:
         sr_score = None
     else:
-        pdh = _val(snapshot, "pdh")
-        pdl = _val(snapshot, "pdl")
+        if daily_levels:
+            pdh = daily_levels.get("pdh")
+            pdl = daily_levels.get("pdl")
+        else:
+            pdh = _val(snapshot, "pdh")
+            pdl = _val(snapshot, "pdl")
         if pdh is None and pdl is None:
             sr_score = None
         else:
