@@ -89,6 +89,63 @@ not match and are treated as part of the indicator name."""
 # Pure helpers — exercised by unit tests without DB or realtime feed
 # ---------------------------------------------------------------------------
 
+def _trail_distance(entry: float, sl: float, side: str, mult: float = 1.0) -> float:
+    """Absolute rupee distance the trailing stop sits below (LONG) or
+    above (SHORT) the running extreme. Defaults to the entry-to-SL
+    distance so the trail uses the same risk geometry the trade was
+    sized on; the ``mult`` knob lets the operator tighten or loosen
+    via ``settings.trailing_distance_mult``."""
+    raw = (entry - sl) if side == "LONG" else (sl - entry)
+    return max(0.0, raw * float(mult))
+
+
+def _evaluate_runner_bar(
+    side: Literal["LONG", "SHORT"],
+    trailing_stop: float,
+    bar,
+) -> tuple[str, float, str] | None:
+    """Runner-phase evaluator: does ``bar`` close the runner via the
+    trailing stop? Returns ``('TRAIL', exit_price, notes)`` or None.
+
+    TP2 is intentionally NOT checked here — the Phase-7b spec is that
+    the runner exits only on trailing-stop hit. Same-bar order
+    semantics match :func:`_evaluate_bar` (we look at low for LONG,
+    high for SHORT)."""
+    if bar is None:
+        return None
+    if side == "LONG":
+        if bar.low <= trailing_stop:
+            return ("TRAIL", trailing_stop, "")
+        return None
+    if bar.high >= trailing_stop:
+        return ("TRAIL", trailing_stop, "")
+    return None
+
+
+def _update_running_extreme_and_trail(
+    side: Literal["LONG", "SHORT"],
+    bar,
+    entry: float,
+    trail_distance: float,
+    running_high: float | None,
+    running_low: float | None,
+    trailing_stop: float,
+) -> tuple[float | None, float | None, float]:
+    """After a bar didn't stop the runner out, ratchet the running
+    extreme and (one-way) the trailing stop. ``trailing_stop`` is
+    floored at the entry price for LONG (or ceilinged for SHORT) so
+    breakeven is the worst-case runner outcome."""
+    if bar is None:
+        return running_high, running_low, trailing_stop
+    if side == "LONG":
+        new_high = bar.high if running_high is None else max(running_high, bar.high)
+        candidate = max(entry, new_high - trail_distance)
+        return new_high, running_low, max(trailing_stop, candidate)
+    new_low = bar.low if running_low is None else min(running_low, bar.low)
+    candidate = min(entry, new_low + trail_distance)
+    return running_high, new_low, min(trailing_stop, candidate)
+
+
 def _evaluate_bar(
     side: Literal["LONG", "SHORT"],
     sl: float,
@@ -369,19 +426,18 @@ def close_manual(trade_id: int, reason: str) -> None:
     _close(trade_id, "MANUAL", exit_price, notes=reason)
 
 
-def _close(
+def _partial_tp1(
     trade_id: int,
-    status: Literal["TP1", "TP2", "SL", "TIMEOUT", "MANUAL"],
-    exit_price: float | None,
-    *,
-    notes: str | None = None,
+    exit_price: float,
+    partial_qty: int,
+    trailing_stop: float,
+    running_high: float | None,
+    running_low: float | None,
 ) -> None:
-    """Mark a trade closed. Computes pnl_gross/pnl_net via
-    :func:`_compute_pnl` when ``exit_price`` is available; leaves
-    them NULL otherwise (MANUAL on a delisted symbol).
-
-    Used by both :func:`monitor` (SL/TP/TIMEOUT fills) and
-    :func:`close_manual`."""
+    """Book the 50% (or whatever ``partial_at_tp1_pct``) partial at
+    TP1 and transition the trade into runner mode. The trade row
+    stays ``status='OPEN'``; ``tp1_filled`` is the flag the monitor
+    uses to switch evaluators on subsequent ticks."""
     with connect() as conn:
         row = conn.execute(
             "SELECT side, entry_price, qty FROM paper_trades WHERE id = ?",
@@ -390,11 +446,82 @@ def _close(
         if row is None:
             raise ValueError(f"paper_trades id={trade_id} not found")
         side, entry_price, qty = row
+        tp1_gross, tp1_net = _compute_pnl(side, entry_price, exit_price, partial_qty)
+        runner_qty = max(0, qty - partial_qty)
+        ts = pd.Timestamp.now(tz=IST).isoformat()
+        conn.execute(
+            "UPDATE paper_trades SET "
+            "  tp1_filled=1, tp1_exit_ts=?, tp1_exit_price=?, tp1_qty=?, "
+            "  tp1_pnl_gross=?, tp1_pnl_net=?, "
+            "  runner_qty=?, trailing_stop=?, "
+            "  running_high=?, running_low=? "
+            "WHERE id = ?",
+            (ts, exit_price, partial_qty, tp1_gross, tp1_net,
+             runner_qty, trailing_stop, running_high, running_low, trade_id),
+        )
+    log.info(
+        "Partial TP1 trade %d: booked %d @ %.2f (P&L %+.2f) — runner=%d, "
+        "trail=%.2f",
+        trade_id, partial_qty, exit_price, tp1_net, runner_qty, trailing_stop,
+    )
+
+
+def _update_runner_state(
+    trade_id: int,
+    running_high: float | None,
+    running_low: float | None,
+    trailing_stop: float,
+) -> None:
+    """Ratchet the runner's running extreme + trailing stop after a
+    bar that did NOT trigger the trail."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE paper_trades SET running_high=?, running_low=?, trailing_stop=? "
+            "WHERE id = ?",
+            (running_high, running_low, trailing_stop, trade_id),
+        )
+
+
+def _close(
+    trade_id: int,
+    status: Literal["TP1", "TP2", "SL", "TRAIL", "TIMEOUT", "MANUAL"],
+    exit_price: float | None,
+    *,
+    notes: str | None = None,
+) -> None:
+    """Mark a trade closed. Computes pnl_gross/pnl_net via
+    :func:`_compute_pnl` when ``exit_price`` is available; leaves
+    them NULL otherwise (MANUAL on a delisted symbol).
+
+    Phase-7b: when ``tp1_filled=1``, the runner's exit P&L is added
+    to the TP1 partial P&L so ``pnl_gross`` / ``pnl_net`` capture the
+    TOTAL trade outcome. That keeps ``daily_summary`` and every other
+    aggregator correct without per-call-site changes.
+
+    Used by both :func:`monitor` (SL/TP/TIMEOUT/TRAIL fills) and
+    :func:`close_manual`."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT side, entry_price, qty, tp1_filled, "
+            "       tp1_pnl_gross, tp1_pnl_net, runner_qty "
+            "FROM paper_trades WHERE id = ?",
+            (trade_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"paper_trades id={trade_id} not found")
+        side, entry_price, qty, tp1_filled, tp1_gross, tp1_net, runner_qty = row
         exit_ts = pd.Timestamp.now(tz=IST).isoformat()
-        if exit_price is not None:
-            gross, net = _compute_pnl(side, entry_price, exit_price, qty)
-        else:
+        if exit_price is None:
             gross, net = None, None
+        elif tp1_filled:
+            # Runner phase: P&L is the runner's exit plus the TP1 booking.
+            r_gross, r_net = _compute_pnl(
+                side, entry_price, exit_price, runner_qty or 0,
+            )
+            gross = (tp1_gross or 0.0) + r_gross
+            net = (tp1_net or 0.0) + r_net
+        else:
+            gross, net = _compute_pnl(side, entry_price, exit_price, qty)
         conn.execute(
             "UPDATE paper_trades "
             "SET status=?, exit_ts=?, exit_price=?, "
@@ -472,6 +599,8 @@ def _monitor_once(
     from .journal import list_open
     from data.realtime_feed import _floor_to_5m
 
+    from bot.config import settings
+
     market_open = market_open_check()
     for trade in list_open():
         # The bars_5m table and the live-feed _current dict are keyed
@@ -481,15 +610,21 @@ def _monitor_once(
         # never fired in production until this conversion landed.
         feed_symbol = to_fyers(trade.symbol)
 
-        # ---- Completed-bar replay (bar-boundary fix) ------------------
+        # ---- Gather bars to replay ------------------------------------
+        completed: list = []
         if market_open and get_bars_since is not None:
-            entry_ts = pd.Timestamp(trade.entry_ts)
-            if entry_ts.tz is None:
-                entry_ts = entry_ts.tz_localize(IST)
+            since_ts = (
+                pd.Timestamp(trade.tp1_exit_ts) if trade.tp1_filled
+                else pd.Timestamp(trade.entry_ts)
+            )
+            if since_ts.tz is None:
+                since_ts = since_ts.tz_localize(IST)
             else:
-                entry_ts = entry_ts.tz_convert(IST)
-            # Skip the entry bar itself; replay strictly subsequent bars.
-            next_bar_open = _floor_to_5m(entry_ts) + pd.Timedelta(minutes=5)
+                since_ts = since_ts.tz_convert(IST)
+            # Skip the entry-or-partial bar itself; replay strictly
+            # subsequent bars so a bar that ALREADY counted toward a
+            # fill doesn't get replayed against the new state.
+            next_bar_open = _floor_to_5m(since_ts) + pd.Timedelta(minutes=5)
             try:
                 completed = get_bars_since(feed_symbol, next_bar_open) or []
             except Exception:
@@ -498,36 +633,29 @@ def _monitor_once(
                     "partial-only evaluation", feed_symbol,
                 )
                 completed = []
-            hit = None
-            for cbar in completed:
-                hit = _evaluate_bar(
-                    trade.side, trade.stop_loss, trade.target_1,
-                    trade.target_2, cbar,
-                )
-                if hit is not None:
-                    break
-            if hit is not None:
-                status, exit_price, notes = hit
-                _close(trade.id, status, exit_price, notes=notes or None)
-                continue
 
-        # ---- Current-partial check (unchanged behaviour) --------------
-        bar = get_partial(feed_symbol)
-        if market_open:
-            result = _evaluate_bar(
-                trade.side, trade.stop_loss, trade.target_1,
-                trade.target_2, bar,
+        partial_bar = get_partial(feed_symbol) if market_open else None
+
+        # ---- Dispatch on tp1_filled -----------------------------------
+        if market_open and trade.tp1_filled:
+            closed = _process_runner_phase(
+                trade, completed, partial_bar, settings,
             )
-            if result is not None:
-                status, exit_price, notes = result
-                _close(trade.id, status, exit_price, notes=notes or None)
-                continue
-        # No rule fill — check the wall-clock TIMEOUT (fires regardless
-        # of market state).
+        elif market_open:
+            closed = _process_pre_tp1_phase(
+                trade, completed, partial_bar, settings,
+            )
+        else:
+            closed = False
+
+        if closed:
+            continue
+
+        # ---- TIMEOUT (fires regardless of market state) --------------
         if _is_timed_out(trade.entry_ts):
-            if bar is not None:
+            if partial_bar is not None:
                 _close(
-                    trade.id, "TIMEOUT", float(bar.close),
+                    trade.id, "TIMEOUT", float(partial_bar.close),
                     notes="timeout at session close",
                 )
             else:
@@ -535,6 +663,113 @@ def _monitor_once(
                     trade.id, "TIMEOUT", None,
                     notes="timeout; no LTP available",
                 )
+
+
+def _process_pre_tp1_phase(
+    trade, completed: list, partial_bar, settings,
+) -> bool:
+    """Pre-TP1: evaluate completed bars then the current partial.
+    Returns True if the trade was closed (or transitioned to runner
+    via partial TP1 + full TP2 close on a later bar)."""
+    bars = list(completed)
+    if partial_bar is not None:
+        bars.append(partial_bar)
+
+    side = trade.side
+    sl = trade.stop_loss
+    tp1 = trade.target_1
+    tp2 = trade.target_2
+    trail_enabled = settings.trailing_stop_enabled
+
+    for bar in bars:
+        result = _evaluate_bar(side, sl, tp1, tp2, bar)
+        if result is None:
+            continue
+        status, exit_price, notes = result
+
+        if status == "TP1" and trail_enabled:
+            partial_qty = int(trade.qty * settings.partial_at_tp1_pct)
+            if partial_qty <= 0 or partial_qty >= trade.qty:
+                # Position too small to split, or 100% partial requested
+                # — fall back to full close at TP1.
+                _close(trade.id, "TP1", exit_price, notes=notes or None)
+                return True
+            trail_dist = _trail_distance(
+                trade.entry_price, sl, side,
+                settings.trailing_distance_mult,
+            )
+            if side == "LONG":
+                running_high = max(trade.entry_price, exit_price)
+                running_low = None
+                trail = max(trade.entry_price, running_high - trail_dist)
+            else:
+                running_high = None
+                running_low = min(trade.entry_price, exit_price)
+                trail = min(trade.entry_price, running_low + trail_dist)
+            _partial_tp1(
+                trade.id, exit_price, partial_qty, trail,
+                running_high, running_low,
+            )
+            # Refresh the trade view to runner-phase values, then
+            # continue evaluating remaining bars under runner rules.
+            trade = trade.__class__(
+                **{**trade.__dict__,
+                   "tp1_filled": 1,
+                   "tp1_exit_ts": pd.Timestamp.now(tz=IST).isoformat(),
+                   "tp1_qty": partial_qty,
+                   "runner_qty": trade.qty - partial_qty,
+                   "trailing_stop": trail,
+                   "running_high": running_high,
+                   "running_low": running_low}
+            )
+            # Any subsequent bars in this loop are post-TP1, runner-phase.
+            remaining = bars[bars.index(bar) + 1:]
+            return _process_runner_phase(trade, remaining, None, settings)
+
+        # TP2 / SL pre-TP1 — full close as before.
+        _close(trade.id, status, exit_price, notes=notes or None)
+        return True
+    return False
+
+
+def _process_runner_phase(
+    trade, completed: list, partial_bar, settings,
+) -> bool:
+    """Runner phase: trailing stop only. Ratchet running extreme +
+    trail on each bar that DOESN'T stop the runner out. Returns True
+    if the runner closed via the trail."""
+    bars = list(completed)
+    if partial_bar is not None:
+        bars.append(partial_bar)
+
+    side = trade.side
+    entry = trade.entry_price
+    trail_dist = _trail_distance(
+        entry, trade.stop_loss, side, settings.trailing_distance_mult,
+    )
+    running_high = trade.running_high
+    running_low = trade.running_low
+    trailing_stop = trade.trailing_stop
+
+    for bar in bars:
+        result = _evaluate_runner_bar(side, trailing_stop, bar)
+        if result is not None:
+            status, exit_price, notes = result
+            _close(trade.id, status, exit_price, notes=notes or None)
+            return True
+        running_high, running_low, trailing_stop = (
+            _update_running_extreme_and_trail(
+                side, bar, entry, trail_dist,
+                running_high, running_low, trailing_stop,
+            )
+        )
+
+    # No exit this tick — persist the ratcheted state if anything moved.
+    if (running_high != trade.running_high
+            or running_low != trade.running_low
+            or trailing_stop != trade.trailing_stop):
+        _update_runner_state(trade.id, running_high, running_low, trailing_stop)
+    return False
 
 
 async def monitor(stop_event: asyncio.Event | None = None) -> None:

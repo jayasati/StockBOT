@@ -51,6 +51,17 @@ class Settings:
     # reasonable liquidity definition but well below a 500k-share floor.
     liquidity_min_turnover_cr: float = 5.0
 
+    # Phase-7b: 50% partial at TP1 + trailing stop on the runner. The
+    # runner exits ONLY on trailing-stop hit (or TIMEOUT / MANUAL) —
+    # TP2 becomes informational. ``trailing_distance_mult`` scales the
+    # entry-to-SL distance: 1.0 = same risk distance as the initial
+    # stop, 0.5 = half (tighter trail). The trail floor is the entry
+    # price (breakeven), so the runner can never lose money once TP1
+    # has booked the first half of the position.
+    trailing_stop_enabled: bool = True
+    partial_at_tp1_pct: float = 0.50
+    trailing_distance_mult: float = 1.0
+
 
 settings = Settings(
     telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
@@ -60,4 +71,8 @@ settings = Settings(
     cooldown_minutes=int(os.getenv("COOLDOWN_MINUTES", "60")),
     scan_interval_seconds=int(os.getenv("SCAN_INTERVAL_SECONDS", "300")),
     liquidity_min_turnover_cr=float(os.getenv("LIQUIDITY_MIN_TURNOVER_CR", "5.0")),
+    trailing_stop_enabled=os.getenv("TRAILING_STOP_ENABLED", "true").lower()
+        in ("1", "true", "yes", "on"),
+    partial_at_tp1_pct=float(os.getenv("PARTIAL_AT_TP1_PCT", "0.50")),
+    trailing_distance_mult=float(os.getenv("TRAILING_DISTANCE_MULT", "1.0")),
 )

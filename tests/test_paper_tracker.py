@@ -718,10 +718,13 @@ class TestMonitorOnce:
         # LONG sl loss: gross = (98-100)*10 = -20; net is more negative.
         assert pnl_net < -20.0
 
-    def test_short_tp1_hit(self, tmp_db):
+    def test_short_tp1_hit(self, tmp_db, monkeypatch):
+        from bot.config import settings
         from paper.schema import connect
         from paper.tracker import _monitor_once, open_trade
 
+        # Legacy full-close-at-TP1 semantics — partial+trail tested separately.
+        monkeypatch.setattr(settings, "trailing_stop_enabled", False)
         trade_id = open_trade("TEST.NS", "SHORT", 100, 102, 96, None, 10, 0.7, {})
         bars = {"NSE:TEST-EQ": FakeBar(high=101, low=95, close=96.5)}
         _monitor_once(lambda sym: bars.get(sym), lambda: True)
@@ -738,10 +741,12 @@ class TestMonitorOnce:
         assert pnl_gross == pytest.approx(40.0)
         assert 0 < pnl_net < pnl_gross
 
-    def test_sl_and_tp_same_bar_takes_tp(self, tmp_db):
+    def test_sl_and_tp_same_bar_takes_tp(self, tmp_db, monkeypatch):
+        from bot.config import settings
         from paper.schema import connect
         from paper.tracker import _monitor_once, open_trade
 
+        monkeypatch.setattr(settings, "trailing_stop_enabled", False)
         trade_id = open_trade("TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {})
         # Both SL (low<=98) and TP1 (high>=104) hit on same bar.
         bars = {"NSE:TEST-EQ": FakeBar(high=105, low=97, close=104.5)}
@@ -844,8 +849,10 @@ class TestMonitorOnce:
         high=105 (TP1 hit). The current partial is below TP (high=103).
         With the fix, the completed bar's high triggers TP1."""
         import paper.tracker as tr
+        from bot.config import settings
         from paper.schema import connect
 
+        monkeypatch.setattr(settings, "trailing_stop_enabled", False)
         monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: False)
         trade_id = tr.open_trade(
             "TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {},
@@ -969,8 +976,10 @@ class TestMonitorOnce:
         ``get_bars_since`` (the existing TestMonitorOnce cases) keep
         the old partial-only behaviour."""
         import paper.tracker as tr
+        from bot.config import settings
         from paper.schema import connect
 
+        monkeypatch.setattr(settings, "trailing_stop_enabled", False)
         monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: False)
         trade_id = tr.open_trade(
             "TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {},
@@ -983,6 +992,288 @@ class TestMonitorOnce:
                 "SELECT status FROM paper_trades WHERE id = ?", (trade_id,),
             ).fetchone()[0]
         assert status == "TP1"
+
+
+class TestPartialAndTrailing:
+    """Phase-7b: 50% partial at TP1 + trailing stop on the runner.
+
+    Conventions used across these tests:
+      * trade qty=10, entry=100, SL=98, TP1=104, TP2=None
+      * trail_distance = entry - SL = 2.0 (default mult 1.0)
+      * trailing stop floor = entry (100) — runner can't lose
+    """
+
+    def test_partial_books_half_at_tp1_and_runner_stays_open(
+        self, tmp_db, monkeypatch,
+    ):
+        import paper.tracker as tr
+        from paper.schema import connect
+
+        monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: False)
+        trade_id = tr.open_trade(
+            "TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {},
+        )
+        # Single completed bar hits TP1 (high=104.5).
+        completed = [FakeBar(high=104.5, low=101, close=103.8)]
+        tr._monitor_once(
+            lambda sym: None, lambda: True,
+            lambda sym, since: completed,
+        )
+
+        with connect(tmp_db) as conn:
+            row = conn.execute(
+                "SELECT status, tp1_filled, tp1_exit_price, tp1_qty, "
+                "       runner_qty, trailing_stop, running_high "
+                "FROM paper_trades WHERE id = ?",
+                (trade_id,),
+            ).fetchone()
+        status, tp1_filled, tp1_price, tp1_qty, runner, trail, rhigh = row
+        assert status == "OPEN"
+        assert tp1_filled == 1
+        assert tp1_price == pytest.approx(104.0)
+        assert tp1_qty == 5
+        assert runner == 5
+        # trail floor = entry = 100, candidate = running_high(104) - 2 = 102
+        # So trail = max(100, 102) = 102.
+        assert trail == pytest.approx(102.0)
+        assert rhigh == pytest.approx(104.0)
+
+    def test_runner_closes_on_trailing_stop_hit(self, tmp_db, monkeypatch):
+        """After TP1 partial, a later completed bar dips to the trail
+        line → runner exits at the trail price, status='TRAIL'."""
+        import paper.tracker as tr
+        from paper.schema import connect
+
+        monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: False)
+        trade_id = tr.open_trade(
+            "TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {},
+        )
+        # First tick fires TP1 partial; second tick provides a bar
+        # that knocks the trail.
+        tr._monitor_once(
+            lambda sym: None, lambda: True,
+            lambda sym, since: [FakeBar(high=104.5, low=101, close=103.8)],
+        )
+        # After partial: trail=102, runner=5 open. Next bar low<=102
+        # closes the runner.
+        tr._monitor_once(
+            lambda sym: None, lambda: True,
+            lambda sym, since: [FakeBar(high=103.5, low=101.5, close=102.0)],
+        )
+
+        with connect(tmp_db) as conn:
+            row = conn.execute(
+                "SELECT status, exit_price, pnl_gross, pnl_net, "
+                "       tp1_pnl_gross "
+                "FROM paper_trades WHERE id = ?",
+                (trade_id,),
+            ).fetchone()
+        status, exit_price, gross, net, tp1_gross = row
+        assert status == "TRAIL"
+        assert exit_price == pytest.approx(102.0)
+        # Total gross = TP1 partial (5 × 4 = 20) + runner (5 × 2 = 10) = 30
+        assert tp1_gross == pytest.approx(20.0)
+        assert gross == pytest.approx(30.0)
+        # Net = gross − round-trip costs (≥ 0 since both legs profitable)
+        assert 0 < net < gross
+
+    def test_trail_ratchets_up_on_higher_bars(self, tmp_db, monkeypatch):
+        """Each bar's high above (running_high − trail_distance) pushes
+        the trail up; the trail never moves backward."""
+        import paper.tracker as tr
+        from paper.schema import connect
+
+        monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: False)
+        trade_id = tr.open_trade(
+            "TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {},
+        )
+        # TP1 + a bar with even higher high in one tick.
+        completed = [
+            FakeBar(high=104.5, low=101, close=103.8),  # TP1 partial
+            FakeBar(high=107.0, low=103, close=106.5),  # pushes trail to 105
+            FakeBar(high=106.0, low=105.5, close=105.8),  # stays above trail
+        ]
+        tr._monitor_once(
+            lambda sym: None, lambda: True,
+            lambda sym, since: completed,
+        )
+
+        with connect(tmp_db) as conn:
+            row = conn.execute(
+                "SELECT status, running_high, trailing_stop "
+                "FROM paper_trades WHERE id = ?",
+                (trade_id,),
+            ).fetchone()
+        status, rhigh, trail = row
+        assert status == "OPEN"  # runner still alive — no bar dipped to trail
+        assert rhigh == pytest.approx(107.0)
+        # trail = max(100, 107 - 2) = 105
+        assert trail == pytest.approx(105.0)
+
+    def test_runner_floor_at_entry_protects_against_loss(
+        self, tmp_db, monkeypatch,
+    ):
+        """If the runner has only just transitioned to TP1 and price
+        immediately retraces, the trailing stop cannot go below
+        entry — the runner exits at breakeven, not below."""
+        import paper.tracker as tr
+        from paper.schema import connect
+
+        monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: False)
+        # TP1 only 1pt above entry so running_high = TP1 = 101.
+        # trail = max(100, 101 - 2) = 100 (floor at entry).
+        trade_id = tr.open_trade(
+            "TEST.NS", "LONG", 100, 98, 101, None, 10, 0.7, {},
+        )
+        completed = [
+            FakeBar(high=101.0, low=100.5, close=100.8),  # TP1 partial
+            FakeBar(high=100.5, low=99.5, close=99.7),    # touches trail floor
+        ]
+        tr._monitor_once(
+            lambda sym: None, lambda: True,
+            lambda sym, since: completed,
+        )
+
+        with connect(tmp_db) as conn:
+            status, exit_price = conn.execute(
+                "SELECT status, exit_price FROM paper_trades WHERE id = ?",
+                (trade_id,),
+            ).fetchone()
+        assert status == "TRAIL"
+        # Runner closes at entry (breakeven), NOT at the 99.5 low.
+        assert exit_price == pytest.approx(100.0)
+
+    def test_tp2_ignored_in_runner_phase(self, tmp_db, monkeypatch):
+        """Phase-7b spec: 'will be booked at trailing stop loss hit
+        only'. A runner price beyond TP2 must NOT exit — only the
+        trailing stop or TIMEOUT do."""
+        import paper.tracker as tr
+        from paper.schema import connect
+
+        monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: False)
+        trade_id = tr.open_trade(
+            "TEST.NS", "LONG", 100, 98, 104, 108, 10, 0.7, {},
+        )
+        # TP1 partial then a bar shooting THROUGH TP2 — must NOT close.
+        completed = [
+            FakeBar(high=104.5, low=101, close=103.8),
+            FakeBar(high=110.0, low=107, close=109.0),  # past TP2=108
+        ]
+        tr._monitor_once(
+            lambda sym: None, lambda: True,
+            lambda sym, since: completed,
+        )
+
+        with connect(tmp_db) as conn:
+            row = conn.execute(
+                "SELECT status, trailing_stop, running_high "
+                "FROM paper_trades WHERE id = ?",
+                (trade_id,),
+            ).fetchone()
+        status, trail, rhigh = row
+        # Runner still OPEN; trail ratcheted to 108.
+        assert status == "OPEN"
+        assert rhigh == pytest.approx(110.0)
+        assert trail == pytest.approx(108.0)
+
+    def test_partial_disabled_falls_back_to_full_tp1_close(
+        self, tmp_db, monkeypatch,
+    ):
+        """When ``trailing_stop_enabled=False``, TP1 closes the full
+        position as before — back-compat path."""
+        import paper.tracker as tr
+        from bot.config import settings
+        from paper.schema import connect
+
+        monkeypatch.setattr(settings, "trailing_stop_enabled", False)
+        monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: False)
+        trade_id = tr.open_trade(
+            "TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {},
+        )
+        tr._monitor_once(
+            lambda sym: None, lambda: True,
+            lambda sym, since: [FakeBar(high=105, low=99, close=104.5)],
+        )
+
+        with connect(tmp_db) as conn:
+            status, tp1_filled = conn.execute(
+                "SELECT status, tp1_filled FROM paper_trades WHERE id = ?",
+                (trade_id,),
+            ).fetchone()
+        assert status == "TP1"
+        assert tp1_filled == 0  # no partial recorded
+
+    def test_short_partial_then_trail(self, tmp_db, monkeypatch):
+        """SHORT mirror: entry 100, SL 102, TP1 96. trail_distance =
+        SL - entry = 2. After TP1 partial, running_low = 96, trail =
+        min(100, 96 + 2) = 98. A later bar that ticks UP to 98 stops
+        the runner out at 98."""
+        import paper.tracker as tr
+        from paper.schema import connect
+
+        monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: False)
+        trade_id = tr.open_trade(
+            "TEST.NS", "SHORT", 100, 102, 96, None, 10, 0.7, {},
+        )
+        tr._monitor_once(
+            lambda sym: None, lambda: True,
+            lambda sym, since: [FakeBar(high=99, low=95.5, close=96.5)],
+        )
+        with connect(tmp_db) as conn:
+            tp1_filled, trail, rlow = conn.execute(
+                "SELECT tp1_filled, trailing_stop, running_low "
+                "FROM paper_trades WHERE id = ?", (trade_id,),
+            ).fetchone()
+        assert tp1_filled == 1
+        assert rlow == pytest.approx(96.0)
+        assert trail == pytest.approx(98.0)
+
+        # Runner bar ticks back UP to 98 → trail hit, runner closes.
+        tr._monitor_once(
+            lambda sym: None, lambda: True,
+            lambda sym, since: [FakeBar(high=98.5, low=97, close=97.8)],
+        )
+        with connect(tmp_db) as conn:
+            status, exit_price = conn.execute(
+                "SELECT status, exit_price FROM paper_trades WHERE id = ?",
+                (trade_id,),
+            ).fetchone()
+        assert status == "TRAIL"
+        assert exit_price == pytest.approx(98.0)
+
+    def test_runner_timeout_closes_at_ltp(self, tmp_db, monkeypatch):
+        """A runner that has not hit its trail by 15:30 IST should
+        TIMEOUT at the partial bar's close. Total P&L = TP1 partial +
+        runner-at-LTP."""
+        import paper.tracker as tr
+        from paper.schema import connect
+
+        # TP1 partial first, then force TIMEOUT.
+        monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: False)
+        trade_id = tr.open_trade(
+            "TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {},
+        )
+        tr._monitor_once(
+            lambda sym: None, lambda: True,
+            lambda sym, since: [FakeBar(high=104.5, low=101, close=103.8)],
+        )
+        # Now flip TIMEOUT on and feed a partial bar with close=105.
+        monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: True)
+        tr._monitor_once(
+            lambda sym: FakeBar(high=105, low=104, close=105.0),
+            lambda: True,
+            lambda sym, since: [],
+        )
+
+        with connect(tmp_db) as conn:
+            status, exit_price, gross = conn.execute(
+                "SELECT status, exit_price, pnl_gross "
+                "FROM paper_trades WHERE id = ?", (trade_id,),
+            ).fetchone()
+        assert status == "TIMEOUT"
+        assert exit_price == pytest.approx(105.0)
+        # Total gross = 5 × 4 (TP1) + 5 × 5 (runner at 105) = 45
+        assert gross == pytest.approx(45.0)
 
 
 class TestMonitorTimeout:

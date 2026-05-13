@@ -31,15 +31,23 @@ from .schema import connect, ensure_paper_schema
 _TRADE_COLS = (
     "id, symbol, side, entry_ts, entry_price, qty, stop_loss, "
     "target_1, target_2, confidence, status, exit_ts, exit_price, "
-    "pnl_gross, pnl_net, notes"
+    "pnl_gross, pnl_net, notes, "
+    # Phase-7b: partial-fill + trailing-stop columns
+    "tp1_filled, tp1_exit_ts, tp1_exit_price, tp1_qty, "
+    "tp1_pnl_gross, tp1_pnl_net, runner_qty, "
+    "trailing_stop, running_high, running_low"
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class Trade:
     """One row of ``paper_trades`` as a Python value type. Field order
     mirrors :data:`_TRADE_COLS` so ``Trade.from_row`` can splat the
-    tuple in."""
+    tuple in.
+
+    Not frozen: the monitor mutates a Trade instance in memory while
+    transitioning a single tick from pre-TP1 to runner phase, before
+    persisting via SQL UPDATE."""
     id: int
     symbol: str
     side: str
@@ -56,6 +64,17 @@ class Trade:
     pnl_gross: float | None
     pnl_net: float | None
     notes: str | None
+    # Phase-7b
+    tp1_filled: int = 0
+    tp1_exit_ts: str | None = None
+    tp1_exit_price: float | None = None
+    tp1_qty: int | None = None
+    tp1_pnl_gross: float | None = None
+    tp1_pnl_net: float | None = None
+    runner_qty: int | None = None
+    trailing_stop: float | None = None
+    running_high: float | None = None
+    running_low: float | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row | tuple) -> "Trade":
@@ -249,30 +268,52 @@ def build_eod_digest(d: _Date | str | None = None) -> str | None:
 # ---------------------------------------------------------------------------
 
 def _fmt_trades_table(trades: list[Trade]) -> str:
-    """Fixed-width text table for a list of trades. SL/TP1/TP2 columns
-    are present for both OPEN and CLOSED rows so the report doubles as
-    a "what risk is live right now?" snapshot. TP2 prints ``—`` when
-    the trade was opened with a single target only.
+    """Fixed-width text table for a list of trades.
+
+    Phase-7b column semantics:
+
+      * ``SL``     — original stop on entry.
+      * ``TRAIL``  — live trailing stop once TP1 has partially filled;
+                     ``—`` before TP1.
+      * ``TP1_FILL`` — average TP1 exit price when partial fired,
+                     prefixed with ``½`` so it reads as "half done".
+      * ``EXIT``   — runner exit price (final close) when present.
+      * ``PNL_NET`` — total trade P&L (TP1 partial + runner).
 
     Returns ``(no trades)`` when the list is empty."""
     if not trades:
         return "  (no trades)"
     header = (
         f"  {'ID':>4}  {'SYMBOL':<12}  {'SIDE':<5}  {'STATUS':<7}  "
-        f"{'ENTRY':>9}  {'SL':>9}  {'TP1':>9}  {'TP2':>9}  "
+        f"{'ENTRY':>9}  {'SL':>9}  {'TRAIL':>9}  "
+        f"{'TP1':>9}  {'TP1_FILL':>10}  {'TP2':>9}  "
         f"{'EXIT':>9}  {'PNL_NET':>10}  {'ENTRY_TS':<19}"
     )
     sep = "  " + "-" * (len(header) - 2)
     out = [header, sep]
     for t in trades:
         sl = f"{t.stop_loss:9.2f}" if t.stop_loss is not None else "        —"
+        trail = (
+            f"{t.trailing_stop:9.2f}"
+            if t.trailing_stop is not None else "        —"
+        )
         tp1 = f"{t.target_1:9.2f}" if t.target_1 is not None else "        —"
+        tp1_fill = (
+            f"½ {t.tp1_exit_price:7.2f}"
+            if t.tp1_filled and t.tp1_exit_price is not None
+            else "         —"
+        )
         tp2 = f"{t.target_2:9.2f}" if t.target_2 is not None else "        —"
-        exit_price = f"{t.exit_price:9.2f}" if t.exit_price is not None else "        —"
-        pnl_net = f"{t.pnl_net:+10.2f}" if t.pnl_net is not None else "         —"
+        exit_price = (
+            f"{t.exit_price:9.2f}" if t.exit_price is not None else "        —"
+        )
+        pnl_net = (
+            f"{t.pnl_net:+10.2f}" if t.pnl_net is not None else "         —"
+        )
         out.append(
             f"  {t.id:>4}  {t.symbol:<12}  {t.side:<5}  {t.status:<7}  "
-            f"{t.entry_price:>9.2f}  {sl}  {tp1}  {tp2}  "
+            f"{t.entry_price:>9.2f}  {sl}  {trail}  "
+            f"{tp1}  {tp1_fill}  {tp2}  "
             f"{exit_price}  {pnl_net}  "
             f"{t.entry_ts[:19]:<19}"
         )

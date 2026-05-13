@@ -36,12 +36,29 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     target_2 REAL,
     confidence REAL NOT NULL,
     status TEXT NOT NULL DEFAULT 'OPEN'
-        CHECK (status IN ('OPEN','TP1','TP2','SL','TIMEOUT','MANUAL')),
+        CHECK (status IN ('OPEN','TP1','TP2','SL','TRAIL','TIMEOUT','MANUAL')),
     exit_ts TEXT,
     exit_price REAL,
     pnl_gross REAL,
     pnl_net REAL,
-    notes TEXT
+    notes TEXT,
+    -- Phase-7b: 50% partial at TP1 + trailing stop on the runner.
+    -- ``tp1_filled=1`` flips a trade into the runner phase: half the
+    -- size is already booked at ``tp1_exit_price``; the remaining
+    -- ``runner_qty`` floats until ``trailing_stop`` is hit (status
+    -- 'TRAIL') or the session times out. ``running_high`` /
+    -- ``running_low`` track the favourable extreme since TP1 so the
+    -- trailing stop only moves one way.
+    tp1_filled INTEGER NOT NULL DEFAULT 0,
+    tp1_exit_ts TEXT,
+    tp1_exit_price REAL,
+    tp1_qty INTEGER,
+    tp1_pnl_gross REAL,
+    tp1_pnl_net REAL,
+    runner_qty INTEGER,
+    trailing_stop REAL,
+    running_high REAL,
+    running_low REAL
 );
 CREATE INDEX IF NOT EXISTS idx_paper_trades_open_symbol
     ON paper_trades(symbol, status);
@@ -81,10 +98,96 @@ def connect(db_path: str | None = None) -> sqlite3.Connection:
 
 
 def ensure_paper_schema(db_path: str | None = None) -> None:
-    """Idempotent CREATE for ``paper_trades`` + ``signal_indicators``.
+    """Idempotent CREATE for ``paper_trades`` + ``signal_indicators``,
+    plus the Phase-7b column-and-CHECK migration for databases that
+    were created before partial-fill + trailing-stop support.
 
-    Safe to call on every process start and on every test. ``CREATE
-    TABLE IF NOT EXISTS`` is the whole migration strategy here — no
-    PRAGMA user_version bump needed."""
+    Safe to call on every process start and on every test."""
     with connect(db_path) as conn:
         conn.executescript(PAPER_SCHEMA)
+        _migrate_paper_trades_for_trailing(conn)
+
+
+def _migrate_paper_trades_for_trailing(conn: sqlite3.Connection) -> None:
+    """Upgrade a pre-Phase-7b ``paper_trades`` table in place.
+
+    Two problems to solve:
+
+      1. SQLite ``ALTER TABLE`` can add columns but cannot modify a
+         CHECK constraint. The original table's status CHECK rejects
+         the new ``TRAIL`` value, so we rebuild the table when the
+         migration sentinel (``tp1_filled`` column) is missing.
+      2. The new columns need to coexist with the old data — every
+         pre-existing row migrates with ``tp1_filled=0``, NULL on the
+         trailing columns. That puts legacy trades on the new code
+         path naturally: their next monitor tick evaluates them under
+         the partial-fill + trail rules."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(paper_trades)")}
+    if "tp1_filled" in cols:
+        return  # already migrated
+
+    # Disable FK enforcement during the swap — signal_indicators has
+    # an FK on paper_trades(id) that would otherwise refuse the DROP.
+    # The new table reuses the same id values via INSERT … SELECT, so
+    # the FK pointers remain valid after the rename.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN")
+        conn.execute("""
+            CREATE TABLE paper_trades_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL CHECK (side IN ('LONG','SHORT')),
+                entry_ts TEXT NOT NULL,
+                entry_price REAL NOT NULL,
+                qty INTEGER NOT NULL,
+                stop_loss REAL NOT NULL,
+                target_1 REAL NOT NULL,
+                target_2 REAL,
+                confidence REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'OPEN'
+                    CHECK (status IN ('OPEN','TP1','TP2','SL','TRAIL','TIMEOUT','MANUAL')),
+                exit_ts TEXT,
+                exit_price REAL,
+                pnl_gross REAL,
+                pnl_net REAL,
+                notes TEXT,
+                tp1_filled INTEGER NOT NULL DEFAULT 0,
+                tp1_exit_ts TEXT,
+                tp1_exit_price REAL,
+                tp1_qty INTEGER,
+                tp1_pnl_gross REAL,
+                tp1_pnl_net REAL,
+                runner_qty INTEGER,
+                trailing_stop REAL,
+                running_high REAL,
+                running_low REAL
+            )
+        """)
+        conn.execute("""
+            INSERT INTO paper_trades_new (
+                id, symbol, side, entry_ts, entry_price, qty,
+                stop_loss, target_1, target_2, confidence, status,
+                exit_ts, exit_price, pnl_gross, pnl_net, notes
+            )
+            SELECT id, symbol, side, entry_ts, entry_price, qty,
+                stop_loss, target_1, target_2, confidence, status,
+                exit_ts, exit_price, pnl_gross, pnl_net, notes
+            FROM paper_trades
+        """)
+        conn.execute("DROP TABLE paper_trades")
+        conn.execute("ALTER TABLE paper_trades_new RENAME TO paper_trades")
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paper_trades_open_symbol
+                ON paper_trades(symbol, status)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paper_trades_entry_ts
+                ON paper_trades(entry_ts)
+        """)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
