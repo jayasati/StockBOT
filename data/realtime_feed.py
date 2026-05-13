@@ -355,6 +355,45 @@ class BarAggregator:
                 return None
             return Bar(**cur.__dict__)
 
+    def get_completed_bars_since(
+        self, symbol: str, since_ts: pd.Timestamp,
+    ) -> list[Bar]:
+        """Return completed bars whose ``ts_open >= since_ts``, ordered
+        ascending. Read from the in-memory cache when it covers the
+        window; fall back to SQLite otherwise.
+
+        Why this exists: the paper-tracker monitor polls every 30s but
+        bars complete on a 5-min boundary. A TP/SL hit that lands in a
+        bar between two monitor polls would be lost if we only checked
+        ``get_current_partial`` (which exposes only the in-progress
+        bar). The monitor replays the bars returned here in order so
+        no fill slips through the boundary."""
+        if since_ts.tz is None:
+            since_ts = since_ts.tz_localize(IST)
+        with self._lock:
+            cached = list(self._completed.get(symbol, ()))
+        # If the cache's oldest bar is at-or-before ``since_ts`` we can
+        # serve entirely from memory; otherwise we need DB fallback for
+        # the older portion.
+        if cached and cached[0].ts_open <= since_ts:
+            return [b for b in cached if b.ts_open >= since_ts]
+        since_ms = _ts_open_to_epoch_ms(since_ts)
+        with sqlite3.connect(self.db_path, timeout=5) as conn:
+            rows = conn.execute(
+                f"SELECT ts, open, high, low, close, volume "
+                f"FROM {self.table_name} "
+                "WHERE symbol = ? AND ts >= ? ORDER BY ts ASC",
+                (symbol, since_ms),
+            ).fetchall()
+        return [
+            Bar(
+                symbol=symbol,
+                ts_open=pd.Timestamp(r[0], unit="ms", tz="UTC").tz_convert(IST),
+                open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5],
+            )
+            for r in rows
+        ]
+
     def latest_tick_ts(self, symbol: str) -> datetime | None:
         with self._lock:
             return self._latest_tick_ts.get(symbol)
@@ -573,6 +612,12 @@ def get_1m_bars(symbol: str, n: int = 100) -> pd.DataFrame:
 
 def get_current_partial(symbol: str) -> Bar | None:
     return get_aggregator().get_current_partial(symbol)
+
+
+def get_completed_bars_since(
+    symbol: str, since_ts: pd.Timestamp,
+) -> list[Bar]:
+    return get_aggregator().get_completed_bars_since(symbol, since_ts)
 
 
 def seed_from_yfinance(symbol: str, df_5m: pd.DataFrame) -> int:

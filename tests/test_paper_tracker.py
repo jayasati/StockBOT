@@ -705,7 +705,7 @@ class TestMonitorOnce:
         from paper.tracker import _monitor_once, open_trade
 
         trade_id = open_trade("TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {})
-        bars = {"TEST.NS": FakeBar(high=99, low=97, close=98.5)}
+        bars = {"NSE:TEST-EQ": FakeBar(high=99, low=97, close=98.5)}
         _monitor_once(lambda sym: bars.get(sym), lambda: True)
 
         with connect(tmp_db) as conn:
@@ -723,7 +723,7 @@ class TestMonitorOnce:
         from paper.tracker import _monitor_once, open_trade
 
         trade_id = open_trade("TEST.NS", "SHORT", 100, 102, 96, None, 10, 0.7, {})
-        bars = {"TEST.NS": FakeBar(high=101, low=95, close=96.5)}
+        bars = {"NSE:TEST-EQ": FakeBar(high=101, low=95, close=96.5)}
         _monitor_once(lambda sym: bars.get(sym), lambda: True)
 
         with connect(tmp_db) as conn:
@@ -744,7 +744,7 @@ class TestMonitorOnce:
 
         trade_id = open_trade("TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {})
         # Both SL (low<=98) and TP1 (high>=104) hit on same bar.
-        bars = {"TEST.NS": FakeBar(high=105, low=97, close=104.5)}
+        bars = {"NSE:TEST-EQ": FakeBar(high=105, low=97, close=104.5)}
         _monitor_once(lambda sym: bars.get(sym), lambda: True)
 
         with connect(tmp_db) as conn:
@@ -768,8 +768,8 @@ class TestMonitorOnce:
         id_a = tr.open_trade("AAA.NS", "LONG", 100, 98, 104, None, 10, 0.7, {})
         id_b = tr.open_trade("BBB.NS", "LONG", 200, 196, 208, None, 5, 0.7, {})
         bars = {
-            "AAA.NS": FakeBar(high=99, low=97, close=98),     # SL hit
-            "BBB.NS": FakeBar(high=204, low=199, close=201),  # in-range
+            "NSE:AAA-EQ": FakeBar(high=99, low=97, close=98),     # SL hit
+            "NSE:BBB-EQ": FakeBar(high=204, low=199, close=201),  # in-range
         }
         tr._monitor_once(lambda sym: bars.get(sym), lambda: True)
 
@@ -788,7 +788,7 @@ class TestMonitorOnce:
         trade_id = tr.open_trade(
             "TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {},
         )
-        bars = {"TEST.NS": FakeBar(high=103, low=99, close=101)}
+        bars = {"NSE:TEST-EQ": FakeBar(high=103, low=99, close=101)}
         tr._monitor_once(lambda sym: bars.get(sym), lambda: True)
 
         with connect(tmp_db) as conn:
@@ -807,7 +807,7 @@ class TestMonitorOnce:
         trade_id = tr.open_trade(
             "TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {},
         )
-        bars = {"TEST.NS": FakeBar(high=110, low=97, close=105)}
+        bars = {"NSE:TEST-EQ": FakeBar(high=110, low=97, close=105)}
         tr._monitor_once(lambda sym: bars.get(sym), lambda: False)
 
         with connect(tmp_db) as conn:
@@ -833,6 +833,157 @@ class TestMonitorOnce:
             ).fetchone()[0]
         assert status == "OPEN"
 
+    def test_tp_hit_in_completed_bar_between_polls(self, tmp_db, monkeypatch):
+        """Regression for the ASIANPAINT bug: a TP hit landed inside a
+        5-min bar that completed between two monitor ticks, then the
+        fresh partial of the next bar opened below TP. Without the
+        completed-bar replay the monitor saw only the fresh partial
+        and the fill was lost.
+
+        Setup: trade opened at 100, TP1 at 104. A completed bar shows
+        high=105 (TP1 hit). The current partial is below TP (high=103).
+        With the fix, the completed bar's high triggers TP1."""
+        import paper.tracker as tr
+        from paper.schema import connect
+
+        monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: False)
+        trade_id = tr.open_trade(
+            "TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {},
+        )
+        # Completed bar between entry and now: high=105 → hits TP1=104.
+        completed = [FakeBar(high=105, low=99, close=103.5)]
+        partial = FakeBar(high=103, low=101, close=102.5)  # below TP1
+        tr._monitor_once(
+            lambda sym: partial,
+            lambda: True,
+            lambda sym, since: completed,
+        )
+
+        with connect(tmp_db) as conn:
+            status, exit_price = conn.execute(
+                "SELECT status, exit_price FROM paper_trades WHERE id = ?",
+                (trade_id,),
+            ).fetchone()
+        assert status == "TP1"
+        assert exit_price == pytest.approx(104.0)
+
+    def test_completed_bar_sl_takes_precedence_over_partial_tp(self, tmp_db, monkeypatch):
+        """Order matters: when a completed bar BEFORE the current
+        partial hit the stop, the SL exit wins even if the partial
+        would now be hitting TP. We close at the SL price recorded
+        from the earlier bar — not the current partial's level."""
+        import paper.tracker as tr
+        from paper.schema import connect
+
+        monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: False)
+        trade_id = tr.open_trade(
+            "TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {},
+        )
+        # First completed bar hits SL (low=97 ≤ 98), second would hit TP.
+        completed = [
+            FakeBar(high=99, low=97, close=98.2),       # SL bar
+            FakeBar(high=105, low=99, close=104.5),     # would TP
+        ]
+        partial = FakeBar(high=106, low=104, close=105.0)
+        tr._monitor_once(
+            lambda sym: partial,
+            lambda: True,
+            lambda sym, since: completed,
+        )
+
+        with connect(tmp_db) as conn:
+            status, exit_price = conn.execute(
+                "SELECT status, exit_price FROM paper_trades WHERE id = ?",
+                (trade_id,),
+            ).fetchone()
+        assert status == "SL"
+        assert exit_price == pytest.approx(98.0)
+
+    def test_monitor_translates_yf_symbol_to_fyers_for_bars(
+        self, tmp_db, monkeypatch,
+    ):
+        """Regression for the prod bug (the ASIANPAINT case): bars_5m
+        and the live ``_current`` dict are keyed by Fyers symbols
+        (``NSE:ASIANPAINT-EQ``) while paper_trades stores yfinance
+        symbols (``ASIANPAINT.NS``). The monitor must convert before
+        hitting the feed, otherwise every SL/TP lookup misses and
+        trades only ever exit via TIMEOUT."""
+        import paper.tracker as tr
+        from paper.schema import connect
+
+        monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: False)
+        trade_id = tr.open_trade(
+            "ASIANPAINT.NS", "LONG", 2582, 2566, 2604, 2621, 1, 0.7, {},
+        )
+
+        bars_calls: list[str] = []
+
+        def fake_bars(sym, since):
+            bars_calls.append(sym)
+            return [FakeBar(high=2625, low=2580, close=2622)]
+
+        tr._monitor_once(lambda sym: None, lambda: True, fake_bars)
+
+        # Feed-side lookup must use the Fyers form.
+        assert bars_calls == ["NSE:ASIANPAINT-EQ"]
+        # TP2 fill landed.
+        with connect(tmp_db) as conn:
+            status, exit_price = conn.execute(
+                "SELECT status, exit_price FROM paper_trades WHERE id = ?",
+                (trade_id,),
+            ).fetchone()
+        assert status == "TP2"
+        assert exit_price == pytest.approx(2621.0)
+
+    def test_monitor_translates_yf_symbol_to_fyers_for_partial(
+        self, tmp_db, monkeypatch,
+    ):
+        """Same translation for the current-partial path. Uses a
+        trade whose completed bars don't hit so the partial check
+        actually runs."""
+        import paper.tracker as tr
+        from paper.schema import connect
+
+        monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: False)
+        trade_id = tr.open_trade(
+            "ASIANPAINT.NS", "LONG", 2582, 2566, 2604, 2621, 1, 0.7, {},
+        )
+
+        partial_calls: list[str] = []
+
+        def fake_partial(sym):
+            partial_calls.append(sym)
+            return FakeBar(high=2625, low=2580, close=2622)  # hits TP2
+
+        tr._monitor_once(fake_partial, lambda: True, lambda sym, since: [])
+
+        assert partial_calls == ["NSE:ASIANPAINT-EQ"]
+        with connect(tmp_db) as conn:
+            status = conn.execute(
+                "SELECT status FROM paper_trades WHERE id = ?", (trade_id,),
+            ).fetchone()[0]
+        assert status == "TP2"
+
+    def test_completed_bar_replay_optional(self, tmp_db, monkeypatch):
+        """The bar-replay arg is optional — callers that don't supply
+        ``get_bars_since`` (the existing TestMonitorOnce cases) keep
+        the old partial-only behaviour."""
+        import paper.tracker as tr
+        from paper.schema import connect
+
+        monkeypatch.setattr(tr, "_is_timed_out", lambda *a, **kw: False)
+        trade_id = tr.open_trade(
+            "TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {},
+        )
+        partial = FakeBar(high=105, low=99, close=104.5)  # hits TP1
+        tr._monitor_once(lambda sym: partial, lambda: True)  # no third arg
+
+        with connect(tmp_db) as conn:
+            status = conn.execute(
+                "SELECT status FROM paper_trades WHERE id = ?", (trade_id,),
+            ).fetchone()[0]
+        assert status == "TP1"
+
 
 class TestMonitorTimeout:
     """TIMEOUT specifically — uses monkeypatch on ``_is_timed_out``
@@ -847,7 +998,7 @@ class TestMonitorTimeout:
         trade_id = tr.open_trade(
             "TEST.NS", "LONG", 100, 98, 104, None, 10, 0.7, {},
         )
-        bars = {"TEST.NS": FakeBar(high=100.5, low=99.5, close=100.2)}
+        bars = {"NSE:TEST-EQ": FakeBar(high=100.5, low=99.5, close=100.2)}
         tr._monitor_once(lambda sym: bars.get(sym), lambda: True)
 
         with connect(tmp_db) as conn:

@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from data.trading_calendar import get_session_close
+from fyers_client.symbols import to_fyers
 from trading.costs import round_trip_cost
 
 from .schema import connect, ensure_paper_schema
@@ -361,7 +362,9 @@ def close_manual(trade_id: int, reason: str) -> None:
                     trade_id, status)
         return
 
-    partial = get_current_partial(symbol)
+    # See _monitor_once: the live-feed key is the Fyers symbol, not
+    # the yfinance one stored on paper_trades.
+    partial = get_current_partial(to_fyers(symbol))
     exit_price = float(partial.close) if partial is not None else None
     _close(trade_id, "MANUAL", exit_price, notes=reason)
 
@@ -440,6 +443,7 @@ def _is_timed_out(
 def _monitor_once(
     get_partial: Callable[[str], object],
     market_open_check: Callable[[], bool],
+    get_bars_since: Callable[[str, pd.Timestamp], list] | None = None,
 ) -> None:
     """Scan every OPEN trade once and close any that hit SL/TP/TIMEOUT.
 
@@ -452,16 +456,63 @@ def _monitor_once(
     would hit TP1, we record TP1 even though TIMEOUT (15:30 same-day)
     would fire on the next tick. The informative status (we know
     *why* it closed) is more useful for backtest analysis than the
-    coincidence of running out of clock at the same tick."""
+    coincidence of running out of clock at the same tick.
+
+    Bar-boundary fix (the WELSPUNLIV / ASIANPAINT bug): the monitor
+    polls every 30s but bars complete on a 5-minute boundary. A fill
+    inside a bar that completed between two polls would otherwise be
+    missed — the next ``get_partial`` returns the FRESH partial of the
+    next bar with high/low reset. ``get_bars_since`` (when supplied)
+    is replayed in order BEFORE the partial check so completed-bar
+    fills are captured. Bars whose ts_open is at or before the entry
+    bar are skipped to avoid false fills from price action that
+    happened pre-entry inside the same bar."""
     # Local import to break the import cycle (journal imports tracker
     # indirectly via schema; this side keeps it lazy).
     from .journal import list_open
+    from data.realtime_feed import _floor_to_5m
 
     market_open = market_open_check()
     for trade in list_open():
-        bar = get_partial(trade.symbol)
-        # Rule check first — only valid when market is open (no point
-        # evaluating SL/TP against stale after-hours data).
+        # The bars_5m table and the live-feed _current dict are keyed
+        # by the Fyers symbol (``NSE:ASIANPAINT-EQ``), but paper_trades
+        # stores the yfinance form (``ASIANPAINT.NS``) — that mismatch
+        # made every realtime-feed lookup miss, and is why SL/TP exits
+        # never fired in production until this conversion landed.
+        feed_symbol = to_fyers(trade.symbol)
+
+        # ---- Completed-bar replay (bar-boundary fix) ------------------
+        if market_open and get_bars_since is not None:
+            entry_ts = pd.Timestamp(trade.entry_ts)
+            if entry_ts.tz is None:
+                entry_ts = entry_ts.tz_localize(IST)
+            else:
+                entry_ts = entry_ts.tz_convert(IST)
+            # Skip the entry bar itself; replay strictly subsequent bars.
+            next_bar_open = _floor_to_5m(entry_ts) + pd.Timedelta(minutes=5)
+            try:
+                completed = get_bars_since(feed_symbol, next_bar_open) or []
+            except Exception:
+                log.exception(
+                    "get_bars_since failed for %s; falling back to "
+                    "partial-only evaluation", feed_symbol,
+                )
+                completed = []
+            hit = None
+            for cbar in completed:
+                hit = _evaluate_bar(
+                    trade.side, trade.stop_loss, trade.target_1,
+                    trade.target_2, cbar,
+                )
+                if hit is not None:
+                    break
+            if hit is not None:
+                status, exit_price, notes = hit
+                _close(trade.id, status, exit_price, notes=notes or None)
+                continue
+
+        # ---- Current-partial check (unchanged behaviour) --------------
+        bar = get_partial(feed_symbol)
         if market_open:
             result = _evaluate_bar(
                 trade.side, trade.stop_loss, trade.target_1,
@@ -499,7 +550,9 @@ async def monitor(stop_event: asyncio.Event | None = None) -> None:
     single bad tick (e.g. transient DB error) doesn't take the whole
     loop down."""
     from bot.schedule import is_market_open
-    from data.realtime_feed import get_current_partial
+    from data.realtime_feed import (
+        get_completed_bars_since, get_current_partial,
+    )
 
     log.info("Paper-tracker monitor starting (poll=%ds)", POLL_INTERVAL_SECONDS)
     if stop_event is None:
@@ -507,7 +560,10 @@ async def monitor(stop_event: asyncio.Event | None = None) -> None:
 
     while not stop_event.is_set():
         try:
-            _monitor_once(get_current_partial, is_market_open)
+            _monitor_once(
+                get_current_partial, is_market_open,
+                get_completed_bars_since,
+            )
         except Exception:
             log.exception("paper.monitor: tick failed")
         try:

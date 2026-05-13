@@ -249,22 +249,31 @@ def build_eod_digest(d: _Date | str | None = None) -> str | None:
 # ---------------------------------------------------------------------------
 
 def _fmt_trades_table(trades: list[Trade]) -> str:
-    """Fixed-width text table for a list of trades. Returns
-    ``(no trades)`` when the list is empty."""
+    """Fixed-width text table for a list of trades. SL/TP1/TP2 columns
+    are present for both OPEN and CLOSED rows so the report doubles as
+    a "what risk is live right now?" snapshot. TP2 prints ``—`` when
+    the trade was opened with a single target only.
+
+    Returns ``(no trades)`` when the list is empty."""
     if not trades:
         return "  (no trades)"
     header = (
         f"  {'ID':>4}  {'SYMBOL':<12}  {'SIDE':<5}  {'STATUS':<7}  "
-        f"{'ENTRY':>8}  {'EXIT':>8}  {'PNL_NET':>10}  {'ENTRY_TS':<19}"
+        f"{'ENTRY':>9}  {'SL':>9}  {'TP1':>9}  {'TP2':>9}  "
+        f"{'EXIT':>9}  {'PNL_NET':>10}  {'ENTRY_TS':<19}"
     )
     sep = "  " + "-" * (len(header) - 2)
     out = [header, sep]
     for t in trades:
-        exit_price = f"{t.exit_price:8.2f}" if t.exit_price is not None else "       —"
+        sl = f"{t.stop_loss:9.2f}" if t.stop_loss is not None else "        —"
+        tp1 = f"{t.target_1:9.2f}" if t.target_1 is not None else "        —"
+        tp2 = f"{t.target_2:9.2f}" if t.target_2 is not None else "        —"
+        exit_price = f"{t.exit_price:9.2f}" if t.exit_price is not None else "        —"
         pnl_net = f"{t.pnl_net:+10.2f}" if t.pnl_net is not None else "         —"
         out.append(
             f"  {t.id:>4}  {t.symbol:<12}  {t.side:<5}  {t.status:<7}  "
-            f"{t.entry_price:>8.2f}  {exit_price}  {pnl_net}  "
+            f"{t.entry_price:>9.2f}  {sl}  {tp1}  {tp2}  "
+            f"{exit_price}  {pnl_net}  "
             f"{t.entry_ts[:19]:<19}"
         )
     return "\n".join(out)
