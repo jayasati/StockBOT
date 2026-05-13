@@ -23,6 +23,7 @@ import fyers_client
 from data import filings, precompute, realtime_feed
 from data.fast_mover import FastMove, FastMover, format_fast_move
 from data.trading_calendar import is_trading_day
+from news import scorer as news_scorer
 
 from health import MonitorLoop, format_status
 from paper import journal as paper_journal
@@ -100,6 +101,26 @@ async def _morning_precompute_task(telegram: Telegram) -> None:
             await precompute.run_morning_compute(telegram=telegram)
         except Exception:
             log.exception("Morning precompute run failed")
+
+
+NEWS_UPDATE_INTERVAL_SECONDS = 10 * 60
+"""Phase-10 news pipeline: every 10 min during market hours. The
+underlying fetchers + FinBERT batch cost ~few seconds; aligning on
+a slower cadence than the scanner keeps the FinBERT load amortised."""
+
+
+async def _news_update_task() -> None:
+    """Refresh ``news_items`` + ``news_scores`` every
+    :data:`NEWS_UPDATE_INTERVAL_SECONDS`. Runs only during market
+    hours — overnight/weekend news still gets picked up by the
+    next-session-open fetch."""
+    while True:
+        try:
+            if is_market_open():
+                await news_scorer.update_news_scores()
+        except Exception:
+            log.exception("news.update_news_scores failed")
+        await asyncio.sleep(NEWS_UPDATE_INTERVAL_SECONDS)
 
 
 EOD_DIGEST_HOUR = 15
@@ -267,6 +288,15 @@ async def main() -> None:
         name="morning-precompute",
     )
 
+    # Phase-10 news + sentiment pipeline. Pulls RSS + NewsAPI every
+    # 10 minutes during market hours, scores via FinBERT, writes to
+    # ``news_items`` / ``news_scores``. Runs in stub mode (no-op
+    # writes) when ``transformers`` isn't installed.
+    news_update_task = asyncio.create_task(
+        _news_update_task(),
+        name="news-update",
+    )
+
     try:
         while True:
             try:
@@ -291,12 +321,13 @@ async def main() -> None:
         fast_move_task.cancel()
         eod_digest_task.cancel()
         morning_precompute_task.cancel()
+        news_update_task.cancel()
         try:
             await asyncio.wait_for(
                 asyncio.gather(
                     monitor_task, commands_task, consumer_task,
                     fast_move_task, paper_monitor_task, eod_digest_task,
-                    morning_precompute_task,
+                    morning_precompute_task, news_update_task,
                     return_exceptions=True,
                 ),
                 timeout=5,
@@ -308,6 +339,7 @@ async def main() -> None:
             paper_monitor_task.cancel()
             eod_digest_task.cancel()
             morning_precompute_task.cancel()
+            news_update_task.cancel()
 
 
 def run() -> None:

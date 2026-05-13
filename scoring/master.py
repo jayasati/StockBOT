@@ -44,6 +44,7 @@ def score_signal(
     *,
     config: dict[str, Any] | None = None,
     daily_levels: dict[str, Any] | None = None,
+    news_score: float | None = None,
 ) -> ScoreBreakdown:
     """Compute the Phase-7 weighted confidence score for ``signal``.
 
@@ -116,6 +117,7 @@ def score_signal(
             signal.filing_title,
             signal.side,
             weights=cw.get("news", {}),
+            news_score=news_score,
         ),
     }
 

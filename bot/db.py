@@ -122,9 +122,44 @@ CREATE INDEX IF NOT EXISTS idx_nse_snapshots_kind_ts
     ON nse_snapshots(kind, ts DESC);
 """
 
+# Phase-10 news + sentiment cache.
+# ``news_items``  — one row per unique headline (id = sha1 of
+#                   source+url+title). FinBERT score is signed
+#                   [-1.0, +1.0]; label is the dominant class
+#                   ('positive'/'negative'/'neutral'/'stub'/'error').
+# ``news_scores`` — many-to-many between items and symbols. A single
+#                   item ("Reliance and Tata in JV") fans out into
+#                   one row per matched symbol with the relevance
+#                   from ``news.symbol_match``.
+NEWS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS news_items (
+    id              TEXT PRIMARY KEY,
+    source          TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    body            TEXT,
+    url             TEXT,
+    published_at    TEXT,
+    fetched_at      TEXT NOT NULL,
+    finbert_score   REAL,
+    finbert_label   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_news_items_published
+    ON news_items(published_at DESC);
+
+CREATE TABLE IF NOT EXISTS news_scores (
+    symbol     TEXT NOT NULL,
+    news_id    TEXT NOT NULL REFERENCES news_items(id),
+    relevance  REAL NOT NULL,
+    PRIMARY KEY (symbol, news_id)
+);
+CREATE INDEX IF NOT EXISTS idx_news_scores_symbol
+    ON news_scores(symbol);
+"""
+
 MASTER_SCHEMA = (
     ALERTS_SCHEMA + FILINGS_SCHEMA + RISK_FLAGS_SCHEMA + HEALTH_SCHEMA
     + FILTER_AUDIT_SCHEMA + DAILY_LEVELS_SCHEMA + NSE_SNAPSHOTS_SCHEMA
+    + NEWS_SCHEMA
 )
 
 

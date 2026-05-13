@@ -26,7 +26,6 @@ from data.filings.classify import classify
     "Tata Motors - Buyback of equity shares approved",
     "Reliance - Buy-back offer",
     "Hindalco - Bonus issue 1:1 approved",
-    "Eicher - Bonus shares record date intimation",
     "Lupin - PLI award received",
     "Sun Pharma - Production-linked incentive approved",
 ])
@@ -53,6 +52,16 @@ def test_binary_high_directionally_positive(title: str):
     "Vedanta - Demerger scheme approved",
     "Reliance - Scheme of arrangement filed with NCLT",
     "ITC - Allotment of equity shares under ESOP",
+    # Capital-calendar events — already-announced corporate actions
+    # generate routine date intimations that the old classifier
+    # mistakenly bucketed as binary_high via the bare ``dividend``
+    # regex. Real-world miss: TIINDIA.NS 2026-05-13.
+    "Tube Investments of India Ltd - Record Date For Final Dividend",
+    "Eicher - Bonus shares record date intimation",
+    "HDFC Bank - Record date for interim dividend",
+    "Infosys - Ex-dividend date intimation",
+    "TCS - Book closure for dividend payment",
+    "Reliance - Payment date for final dividend",
 ])
 def test_event_unknown_direction_ambiguous(title: str):
     assert classify(title) == "event_unknown", title

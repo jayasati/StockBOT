@@ -694,14 +694,43 @@ def score_news(
     side: str,
     *,
     weights: dict[str, float],
+    news_score: float | None = None,
 ) -> float:
-    if filing_title:
-        # Filings get +30 already in the legacy scorer; here we
-        # reflect direction-known catalysts as max news score.
-        news_score: float | None = 100.0
+    """News component score.
+
+    Phase 10: ``news_score`` is the [-1.0, +1.0] sentiment value
+    produced by ``news.scorer.get_symbol_news_score``. Polarity flips
+    for SHORT: a strongly positive news mention is bullish (high
+    score) on the LONG side, bearish (low score) on the SHORT side.
+
+    ``filing_title`` keeps its pre-Phase-10 meaning as a
+    direction-known catalyst proxy — used when FinBERT-derived
+    ``news_score`` is None (no news in the last 24h, or transformers
+    not installed and FinBERT is in stub mode for every item).
+
+    Mapping:
+      news_score = +1.0   →  100  (LONG) / 0    (SHORT)
+      news_score =  0     →   50  (neutral)
+      news_score = -1.0   →    0  (LONG) / 100  (SHORT)
+      filing_title set, news_score None  →  100  (LONG only)
+      everything None                    →   50  (neutral)
+    """
+    bull = (side == "LONG")
+    sub: float | None
+    if news_score is not None:
+        signed = max(-1.0, min(1.0, float(news_score)))
+        if bull:
+            sub = 50.0 + signed * 50.0
+        else:
+            sub = 50.0 - signed * 50.0
+    elif filing_title:
+        # Legacy direction-known catalyst — only treat as bullish
+        # for LONG (it's a corporate-positive announcement); SHORT
+        # gets neutral so we don't reward shorting into known positives.
+        sub = 100.0 if bull else NEUTRAL
     else:
-        news_score = NEUTRAL
+        sub = NEUTRAL
     return _normalise(
-        {"filing_signal": news_score},
+        {"filing_signal": sub},
         weights,
     )

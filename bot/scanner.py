@@ -22,6 +22,7 @@ from data import precompute as daily_precompute
 from data.market_context import MarketContext, get_market_context
 from filters import FilterContext, apply_filters
 from filters.chain import write_audit
+from news import scorer as news_scorer
 from paper import tracker as paper_tracker
 import scoring as scoring_engine
 
@@ -205,7 +206,13 @@ def _evaluate_symbol(
     daily_levels = daily_precompute.get_daily_levels(
         signals.symbol, session_date,
     ) if session_date is not None else None
-    breakdown = scoring_engine.score_signal(signals, daily_levels=daily_levels)
+    # Phase 10: weighted FinBERT sentiment over the symbol's news in
+    # the last 24h. None when no news in window or FinBERT runs in
+    # stub mode — score_news falls back to filing_title-only logic.
+    news_score = news_scorer.get_symbol_news_score(signals.symbol, hours=24)
+    breakdown = scoring_engine.score_signal(
+        signals, daily_levels=daily_levels, news_score=news_score,
+    )
     signals.confidence = breakdown.final / 100.0
     signals.score_breakdown = breakdown.as_dict()
     # Alert gate: the scoring.yaml ``alert_threshold`` is the new

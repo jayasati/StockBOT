@@ -26,6 +26,29 @@ from __future__ import annotations
 
 import re
 
+# Calendar events tied to ALREADY-ANNOUNCED capital actions — NOT a
+# new positive signal. A "Record Date for Final Dividend" announces
+# the date the holder-of-record list closes; the stock typically
+# goes ex-dividend (price drops by ~the dividend amount) on or one
+# day before that date. The actionable positive event is the
+# original board declaration; the record-date intimation is just a
+# calendar housekeeping note.
+#
+# Real-world miss this prevents: TIINDIA.NS 2026-05-13 14:31 IST —
+# "Tube Investments of India Ltd - Record Date For Final Dividend"
+# was tagged binary_high → +30 score bonus right before the stock
+# dropped 3.5% in minutes. Capital-calendar entries route to
+# event_unknown so the trader still sees the announcement (the
+# ex-date pre-drop is real risk to scan around) but no score bias
+# is applied.
+_CAPITAL_CALENDAR = [
+    re.compile(r"\brecord\s+date\b", re.I),
+    re.compile(r"\bex[-\s]?dividend\b", re.I),
+    re.compile(r"\bex[-\s]?date\b", re.I),
+    re.compile(r"\bbook\s+closure\b", re.I),
+    re.compile(r"\bpayment\s+date\b", re.I),
+]
+
 # Directionally clear positives — keep these for the +30 score bonus.
 _BINARY_HIGH = [
     # PLI / production-linked incentive
@@ -81,10 +104,26 @@ _BINARY_MED = [
 
 
 def classify(title: str) -> str:
-    """Order matters: directionally positive wins over event-unknown, which
-    wins over binary_med. A title with both ``dividend`` and ``results`` in
-    it (e.g. "Q4 results — dividend declared") gets ``binary_high`` because
-    the dividend is the actionable positive signal."""
+    """Order matters:
+
+      1. Capital-calendar (record date / ex-dividend / book closure)
+         short-circuits to ``event_unknown`` — these mention dividends
+         and would otherwise false-positive into ``binary_high``, but
+         they're calendar housekeeping, not new catalysts.
+
+      2. ``binary_high`` — directionally clear positives.
+      3. ``event_unknown`` — direction depends on body text.
+      4. ``binary_med`` — smaller-impact known-direction events.
+      5. Default ``fluff``.
+
+    A title with both ``dividend`` and ``results`` in it (e.g.
+    "Q4 results — dividend declared") gets ``binary_high`` because
+    the dividend declaration is the actionable positive signal —
+    but "Q4 results - dividend record date" goes to event_unknown
+    via the capital-calendar short-circuit."""
+    for pat in _CAPITAL_CALENDAR:
+        if pat.search(title):
+            return "event_unknown"
     for pat in _BINARY_HIGH:
         if pat.search(title):
             return "binary_high"
