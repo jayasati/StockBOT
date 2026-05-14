@@ -391,3 +391,94 @@ def adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
         },
         index=df.index,
     )
+
+
+def zigzag(df: pd.DataFrame, deviation_pct: float = 5.0) -> pd.DataFrame:
+    """Percent-deviation ZigZag (TradingView's built-in 'Zig Zag').
+
+    Marks confirmed swing highs and lows. A new pivot is only EMITTED
+    once price reverses by at least ``deviation_pct`` against the current
+    running extreme. The most recent (still-running) extreme is NOT
+    marked until a future reversal confirms it — same convention as TV.
+
+    Returns DataFrame:
+        zigzag_price : pivot price at confirmed pivot bars, NaN elsewhere
+        pivot_type   : +1 at high pivots, -1 at low pivots, 0 elsewhere
+
+    Algorithm (per bar i):
+      - if direction is undecided, track both running highest-high and
+        lowest-low; whichever incurs the threshold reversal first
+        becomes the first confirmed pivot
+      - in an uptrend, update the running high; on a low that's >=
+        deviation_pct below the running high, confirm that high as a
+        pivot and switch to downtrend
+      - symmetric for downtrend
+
+    Warmup ≈ 2 bars (need at least one move). On a no-reversal series
+    (e.g. monotonic uptrend), no pivots are emitted at all."""
+    if deviation_pct <= 0:
+        raise ValueError(f"deviation_pct must be > 0, got {deviation_pct}")
+    n = len(df)
+    pivot_price = np.full(n, np.nan, dtype=np.float64)
+    pivot_type = np.zeros(n, dtype=np.int8)
+    if n == 0:
+        return pd.DataFrame(
+            {"zigzag_price": pivot_price, "pivot_type": pivot_type},
+            index=df.index,
+        )
+    high = df["high"].to_numpy(dtype=np.float64)
+    low = df["low"].to_numpy(dtype=np.float64)
+    threshold = deviation_pct / 100.0
+
+    direction = 0  # 0 = undecided, +1 = up, -1 = down
+    high_extreme, high_idx = high[0], 0
+    low_extreme, low_idx = low[0], 0
+
+    for i in range(1, n):
+        h, l = high[i], low[i]
+        if direction == 0:
+            if h > high_extreme:
+                high_extreme, high_idx = h, i
+            if l < low_extreme:
+                low_extreme, low_idx = l, i
+            drop = ((high_extreme - l) / high_extreme) if high_extreme > 0 else 0.0
+            rise = ((h - low_extreme) / low_extreme) if low_extreme > 0 else 0.0
+            confirm_high = drop >= threshold
+            confirm_low = rise >= threshold
+            if confirm_high and confirm_low:
+                # Tie-break by chronology of the candidate pivots.
+                if high_idx <= low_idx:
+                    confirm_low = False
+                else:
+                    confirm_high = False
+            if confirm_high:
+                pivot_price[high_idx] = high_extreme
+                pivot_type[high_idx] = 1
+                direction = -1
+                low_extreme, low_idx = l, i
+            elif confirm_low:
+                pivot_price[low_idx] = low_extreme
+                pivot_type[low_idx] = -1
+                direction = 1
+                high_extreme, high_idx = h, i
+        elif direction == 1:
+            if h > high_extreme:
+                high_extreme, high_idx = h, i
+            if (high_extreme - l) / high_extreme >= threshold:
+                pivot_price[high_idx] = high_extreme
+                pivot_type[high_idx] = 1
+                direction = -1
+                low_extreme, low_idx = l, i
+        else:  # direction == -1
+            if l < low_extreme:
+                low_extreme, low_idx = l, i
+            if (h - low_extreme) / low_extreme >= threshold:
+                pivot_price[low_idx] = low_extreme
+                pivot_type[low_idx] = -1
+                direction = 1
+                high_extreme, high_idx = h, i
+
+    return pd.DataFrame(
+        {"zigzag_price": pivot_price, "pivot_type": pivot_type},
+        index=df.index,
+    )

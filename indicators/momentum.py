@@ -192,6 +192,153 @@ def force_index(df: pd.DataFrame, period: int = 13) -> pd.Series:
     return raw.ewm(span=period, adjust=False, min_periods=period).mean().astype(np.float64)
 
 
+def _streak_series(close: pd.Series) -> np.ndarray:
+    """The Connors-RSI streak series. ``streak[i]`` = number of
+    consecutive bars ending at ``i`` where close moved in the same
+    direction (positive = up streak, negative = down streak, 0 = unchanged
+    from prior). Resets when the direction flips."""
+    arr = close.to_numpy(dtype=np.float64)
+    n = arr.size
+    streak = np.zeros(n, dtype=np.float64)
+    for i in range(1, n):
+        d = arr[i] - arr[i - 1]
+        prev = streak[i - 1]
+        if d > 0:
+            streak[i] = prev + 1 if prev > 0 else 1
+        elif d < 0:
+            streak[i] = prev - 1 if prev < 0 else -1
+        else:
+            streak[i] = 0
+    return streak
+
+
+def connors_rsi(
+    df: pd.DataFrame,
+    rsi_period: int = 3,
+    streak_period: int = 2,
+    rank_period: int = 100,
+) -> pd.Series:
+    """Connors RSI (Larry Connors, 2012). Composite of three sub-indicators::
+
+        rsi_close    = ta.rsi(close, rsi_period)
+        rsi_streak   = ta.rsi(streak_series, streak_period)
+        pct_rank     = ta.percentrank(ta.roc(close, 1), rank_period)
+        crsi         = (rsi_close + rsi_streak + pct_rank) / 3
+
+    where ``percentrank`` is the Pine convention: % of the past
+    ``rank_period`` values STRICTLY less than the current value (current
+    bar excluded from the comparison set). Output is in [0, 100]; warmup
+    ≈ ``rank_period + 1`` bars (the percent-rank lookback dominates)."""
+    if rsi_period < 2 or streak_period < 2 or rank_period < 1:
+        raise ValueError(
+            "rsi_period >= 2, streak_period >= 2, rank_period >= 1 required"
+        )
+    close = df["close"].astype(np.float64)
+
+    rsi_close = rsi(df, period=rsi_period)
+
+    streak = _streak_series(close)
+    streak_df = pd.DataFrame({"close": streak}, index=df.index)
+    rsi_streak = rsi(streak_df, period=streak_period)
+
+    roc_1 = close.pct_change() * 100.0  # 1-bar ROC, in percent
+
+    def _pr(window: np.ndarray) -> float:
+        past = window[:-1]
+        cur = window[-1]
+        if np.isnan(cur):
+            return np.nan
+        # Strict-less-than match Pine's percentrank semantics. NaN values
+        # in the past window naturally don't satisfy `< cur`.
+        return 100.0 * float(np.sum(past < cur)) / rank_period
+
+    pct_rank = roc_1.rolling(
+        rank_period + 1, min_periods=rank_period + 1,
+    ).apply(_pr, raw=True)
+
+    return ((rsi_close + rsi_streak + pct_rank) / 3.0).astype(np.float64)
+
+
+def tsi(
+    df: pd.DataFrame,
+    long_period: int = 25,
+    short_period: int = 13,
+    signal_period: int = 13,
+) -> pd.DataFrame:
+    """True Strength Index (Blau, 1991).
+
+    Pine reference (TradingView's built-in 'True Strength Index')::
+
+        pc        = ta.change(close)
+        smooth_pc = ta.ema(ta.ema(pc, long), short)
+        smooth_abs= ta.ema(ta.ema(math.abs(pc), long), short)
+        tsi       = 100 * smooth_pc / smooth_abs
+        signal    = ta.ema(tsi, signal_length)
+
+    Returns ``{tsi, signal}``, both in the [-100, 100] range. Uses
+    recursive EMA seeding (``ewm adjust=False``) — matches the ``ta``
+    Python library; differs slightly from Pine's SMA-seeded ``ta.ema``
+    in the first ~3x(long+short) bars, then converges. Bars where the
+    smoothed |Δprice| is exactly 0 produce NaN (constant-price stretch)."""
+    if long_period < 1 or short_period < 1 or signal_period < 1:
+        raise ValueError("all periods must be >= 1")
+    pc = df["close"].astype(np.float64).diff()
+    abs_pc = pc.abs()
+
+    def _double_ema(s: pd.Series) -> pd.Series:
+        return (
+            s.ewm(span=long_period, adjust=False, min_periods=long_period).mean()
+             .ewm(span=short_period, adjust=False, min_periods=short_period).mean()
+        )
+
+    num = _double_ema(pc)
+    den = _double_ema(abs_pc)
+    tsi_val = 100.0 * (num / den.replace(0.0, np.nan))
+    signal = tsi_val.ewm(
+        span=signal_period, adjust=False, min_periods=signal_period,
+    ).mean()
+    return pd.DataFrame(
+        {"tsi": tsi_val.astype(np.float64),
+         "signal": signal.astype(np.float64)},
+        index=df.index,
+    )
+
+
+def stoch_rsi(
+    df: pd.DataFrame,
+    rsi_period: int = 14,
+    stoch_period: int = 14,
+    k_smooth: int = 3,
+    d_smooth: int = 3,
+) -> pd.DataFrame:
+    """Stochastic RSI — Stochastic oscillator applied to RSI values.
+
+    Pine reference (TradingView's built-in 'Stochastic RSI')::
+
+        rsi1 = ta.rsi(src, lengthRSI)
+        k    = ta.sma(ta.stoch(rsi1, rsi1, rsi1, lengthStoch), smoothK)
+        d    = ta.sma(k, smoothD)
+
+    Returns ``{k, d}`` in 0-100. Bars where the rolling RSI range is 0
+    (RSI flat over the window) produce NaN to avoid div-by-zero. Warmup
+    ≈ ``rsi_period + stoch_period + k_smooth + d_smooth - 3`` bars."""
+    if rsi_period < 2 or stoch_period < 1 or k_smooth < 1 or d_smooth < 1:
+        raise ValueError(
+            "rsi_period >= 2, stoch_period/k_smooth/d_smooth >= 1 required"
+        )
+    rsi_series = rsi(df, period=rsi_period)
+    rsi_min = rsi_series.rolling(stoch_period, min_periods=stoch_period).min()
+    rsi_max = rsi_series.rolling(stoch_period, min_periods=stoch_period).max()
+    rng = (rsi_max - rsi_min).replace(0.0, np.nan)
+    raw_k = 100.0 * (rsi_series - rsi_min) / rng
+    k = raw_k.rolling(k_smooth, min_periods=k_smooth).mean()
+    d = k.rolling(d_smooth, min_periods=d_smooth).mean()
+    return pd.DataFrame(
+        {"k": k.astype(np.float64), "d": d.astype(np.float64)},
+        index=df.index,
+    )
+
+
 def stochastic(
     df: pd.DataFrame, k: int = 14, d: int = 3, smooth: int = 3
 ) -> pd.DataFrame:

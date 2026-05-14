@@ -1,7 +1,8 @@
 """Volume indicators.
 
 OBV, CMF, A/D Line, Volume Surge Ratio (RVOL absolute), RVOL-TOD (time-
-of-day relative volume), VWAP-SD bands, Anchored VWAP.
+of-day relative volume), VWAP-SD bands, Anchored VWAP, Volume MA, VWMA,
+session VWAP, Auto-Anchored VWAP, Visible Average Price.
 
 Pure; lowercase OHLCV input; warmup → NaN."""
 from __future__ import annotations
@@ -216,3 +217,195 @@ def anchored_vwap(
     out = pd.Series(np.nan, index=df.index, dtype=np.float64)
     out.loc[mask] = vwap.values
     return out
+
+
+def volume_ma(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    """SMA of volume — the moving-average overlay on TradingView's
+    built-in Volume indicator. Pine: ``ta.sma(volume, length)``.
+
+    Used to gauge whether the current bar's volume is above or below its
+    recent average. Warmup = ``period`` bars."""
+    if period < 1:
+        raise ValueError(f"period must be >= 1, got {period}")
+    vol = df["volume"].astype(np.float64)
+    return vol.rolling(period, min_periods=period).mean()
+
+
+def visible_average_price(
+    df: pd.DataFrame,
+    n_bars: int = 100,
+    bins: int = 24,
+    value_area_pct: float = 0.70,
+) -> dict[str, float]:
+    """Visible Range Volume Profile (TradingView 'Visible Average Price' /
+    'Volume Profile').
+
+    Buckets the last ``n_bars`` bars into ``bins`` equal-height price
+    levels (between window low and window high), attributes each bar's
+    full volume to the bin containing its close, then returns:
+
+        poc          — midpoint of the highest-volume bin (Point of Control)
+        vah, val     — upper / lower edges of the Value Area, the smallest
+                       contiguous price band around POC containing
+                       ``value_area_pct`` of total volume
+        total_volume — sum of all volume in the window
+
+    Returns NaN for poc/vah/val if the window is empty. ``value_area_pct``
+    must be in (0, 1]."""
+    if n_bars < 1:
+        raise ValueError(f"n_bars must be >= 1, got {n_bars}")
+    if bins < 1:
+        raise ValueError(f"bins must be >= 1, got {bins}")
+    if not (0 < value_area_pct <= 1.0):
+        raise ValueError(
+            f"value_area_pct must be in (0, 1]; got {value_area_pct}"
+        )
+    if df.empty:
+        return {"poc": np.nan, "vah": np.nan, "val": np.nan, "total_volume": 0.0}
+
+    window = df.tail(n_bars)
+    price_low = float(window["low"].min())
+    price_high = float(window["high"].max())
+    total_volume = float(window["volume"].sum())
+
+    if price_high == price_low:
+        return {
+            "poc": price_low, "vah": price_high, "val": price_low,
+            "total_volume": total_volume,
+        }
+
+    edges = np.linspace(price_low, price_high, bins + 1)
+    midpoints = (edges[:-1] + edges[1:]) / 2.0
+    closes = window["close"].to_numpy(dtype=np.float64)
+    vols = window["volume"].to_numpy(dtype=np.float64)
+    # searchsorted finds insertion point on the right of each value, so
+    # subtract 1 to get the bin index. Clip handles the right edge
+    # (bars exactly at price_high otherwise land in bin == bins).
+    bin_idx = np.clip(
+        np.searchsorted(edges, closes, side="right") - 1, 0, bins - 1,
+    )
+    bin_volumes = np.zeros(bins, dtype=np.float64)
+    np.add.at(bin_volumes, bin_idx, vols)
+
+    poc_idx = int(np.argmax(bin_volumes))
+    poc = float(midpoints[poc_idx])
+
+    # Value-area expansion: walk outward from POC, taking whichever
+    # neighbour bin has more volume, until cumulative >= target.
+    target = total_volume * value_area_pct
+    cum = float(bin_volumes[poc_idx])
+    lo = hi = poc_idx
+    while cum < target and (lo > 0 or hi < bins - 1):
+        up_vol = bin_volumes[hi + 1] if hi < bins - 1 else -np.inf
+        dn_vol = bin_volumes[lo - 1] if lo > 0 else -np.inf
+        if up_vol >= dn_vol:
+            hi += 1
+            cum += float(bin_volumes[hi])
+        else:
+            lo -= 1
+            cum += float(bin_volumes[lo])
+
+    return {
+        "poc": poc,
+        "vah": float(edges[hi + 1]),
+        "val": float(edges[lo]),
+        "total_volume": total_volume,
+    }
+
+
+def auto_anchored_vwap(
+    df: pd.DataFrame, lookback: int = 50,
+) -> pd.DataFrame:
+    """Auto-Anchored VWAP — VWAP from the rolling highest-high / lowest-low
+    bar in the last ``lookback`` bars.
+
+    At each bar T, two anchors are computed independently:
+
+        anchor_high(T) = bar with the highest high in [T-lookback+1, T]
+        anchor_low(T)  = bar with the lowest low  in [T-lookback+1, T]
+
+    and the VWAP is summed from that anchor up to and including T using
+    the typical-price ``hlc3`` convention. As new bars print, the anchor
+    can SHIFT to a fresher swing extreme — that's the "auto" part.
+
+    Returns a DataFrame with columns ``avwap_from_high`` and
+    ``avwap_from_low``. Warmup = 1 bar (the first bar is its own anchor)."""
+    if lookback < 1:
+        raise ValueError(f"lookback must be >= 1, got {lookback}")
+    n = len(df)
+    cols = ("avwap_from_high", "avwap_from_low")
+    if n == 0:
+        return pd.DataFrame({c: [] for c in cols}, index=df.index)
+    high = df["high"].to_numpy(dtype=np.float64)
+    low = df["low"].to_numpy(dtype=np.float64)
+    tp = (df["high"] + df["low"] + df["close"]).astype(np.float64).to_numpy() / 3.0
+    vol = df["volume"].astype(np.float64).to_numpy()
+    pv = tp * vol
+    pv_cum = np.concatenate([[0.0], np.cumsum(pv)])  # prefix sums for O(1) range
+    v_cum = np.concatenate([[0.0], np.cumsum(vol)])
+
+    avwap_high = np.full(n, np.nan)
+    avwap_low = np.full(n, np.nan)
+    for t in range(n):
+        start = max(0, t - lookback + 1)
+        # Argmax/argmin over the rolling window — small (lookback) so
+        # the inner numpy call dominates, not Python-loop overhead.
+        idx_h = start + int(np.argmax(high[start:t + 1]))
+        idx_l = start + int(np.argmin(low[start:t + 1]))
+        sum_pv_h = pv_cum[t + 1] - pv_cum[idx_h]
+        sum_v_h = v_cum[t + 1] - v_cum[idx_h]
+        sum_pv_l = pv_cum[t + 1] - pv_cum[idx_l]
+        sum_v_l = v_cum[t + 1] - v_cum[idx_l]
+        if sum_v_h > 0:
+            avwap_high[t] = sum_pv_h / sum_v_h
+        if sum_v_l > 0:
+            avwap_low[t] = sum_pv_l / sum_v_l
+    return pd.DataFrame(
+        {"avwap_from_high": avwap_high, "avwap_from_low": avwap_low},
+        index=df.index,
+    )
+
+
+def vwap(df: pd.DataFrame) -> pd.Series:
+    """Session-anchored VWAP — TradingView's built-in ``VWAP`` indicator.
+
+    Pine: ``ta.vwap(hlc3)`` — resets at each new session::
+
+        tp = (high + low + close) / 3
+        vwap = cumsum(tp * volume) / cumsum(volume)   per session
+
+    Sessions are grouped by the bar's local date (the index must be
+    tz-aware). Bars where the session-cumulative volume is 0 produce
+    NaN. Warmup = 1 bar per session."""
+    if df.empty:
+        return pd.Series(np.nan, index=df.index, dtype=np.float64)
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError("vwap requires DatetimeIndex")
+    tp = (df["high"] + df["low"] + df["close"]).astype(np.float64) / 3.0
+    vol = df["volume"].astype(np.float64)
+    pv = tp * vol
+    session = pd.Series(df.index.date, index=df.index, name="_session")
+    cum_pv = pv.groupby(session, sort=False).cumsum()
+    cum_v = vol.groupby(session, sort=False).cumsum()
+    return (cum_pv / cum_v.replace(0.0, np.nan)).astype(np.float64)
+
+
+def vwma(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    """Volume-Weighted Moving Average. Pine: ``ta.vwma(source, length)``::
+
+        vwma = sma(source * volume, length) / sma(volume, length)
+
+    A weighted MA where each bar's contribution is scaled by its volume
+    — high-volume bars pull the average more than low-volume bars. The
+    rolling sums of (source*vol) and (vol) cancel the period factor, so
+    we use rolling sums (equivalent to and a hair faster than rolling
+    means). Warmup = ``period`` bars. Bars where the rolling volume sum
+    is 0 produce NaN to avoid div-by-zero."""
+    if period < 1:
+        raise ValueError(f"period must be >= 1, got {period}")
+    src = df["close"].astype(np.float64)
+    vol = df["volume"].astype(np.float64)
+    pv = src * vol
+    sum_pv = pv.rolling(period, min_periods=period).sum()
+    sum_v = vol.rolling(period, min_periods=period).sum()
+    return (sum_pv / sum_v.replace(0.0, np.nan)).astype(np.float64)

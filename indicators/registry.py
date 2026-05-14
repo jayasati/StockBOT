@@ -131,6 +131,12 @@ def _build_registry() -> dict[str, IndicatorSpec]:
             # ci > 61.8 = choppy (suppress trend), ci < 38.2 = trending
             bullish_thresh=38.2, bearish_thresh=61.8,
         ),
+        IndicatorSpec(
+            name="zigzag", func=trend.zigzag,
+            default_params={"deviation_pct": 5.0},
+            output_kind="frame", output_keys=("zigzag_price", "pivot_type"),
+            warmup_bars=2, category="trend", direction="level",
+        ),
         # ── momentum ─────────────────────────────────────────────────────
         IndicatorSpec(
             name="rsi", func=momentum.rsi,
@@ -151,6 +157,35 @@ def _build_registry() -> dict[str, IndicatorSpec]:
             default_params={"k": 14, "d": 3, "smooth": 3},
             output_kind="frame", output_keys=("k", "d"),
             warmup_bars=17, category="momentum", direction="bullish_high",
+            bullish_thresh=80.0, bearish_thresh=20.0,
+        ),
+        IndicatorSpec(
+            name="connors_rsi", func=momentum.connors_rsi,
+            default_params={
+                "rsi_period": 3, "streak_period": 2, "rank_period": 100,
+            },
+            output_kind="series", output_keys=("crsi",),
+            warmup_bars=101, category="momentum", direction="bullish_high",
+            bullish_thresh=90.0, bearish_thresh=10.0,
+        ),
+        IndicatorSpec(
+            name="tsi", func=momentum.tsi,
+            default_params={
+                "long_period": 25, "short_period": 13, "signal_period": 13,
+            },
+            output_kind="frame", output_keys=("tsi", "signal"),
+            warmup_bars=50, category="momentum", direction="two_sided",
+        ),
+        IndicatorSpec(
+            name="stoch_rsi", func=momentum.stoch_rsi,
+            default_params={
+                "rsi_period": 14, "stoch_period": 14,
+                "k_smooth": 3, "d_smooth": 3,
+            },
+            output_kind="frame", output_keys=("k", "d"),
+            # rsi(15) → stoch(14) → sma_k(3) → sma_d(3); first valid d at
+            # ~ 14+14+3+3-3 = 31 bars (loose).
+            warmup_bars=31, category="momentum", direction="bullish_high",
             bullish_thresh=80.0, bearish_thresh=20.0,
         ),
         IndicatorSpec(
@@ -231,6 +266,39 @@ def _build_registry() -> dict[str, IndicatorSpec]:
             warmup_bars=20, category="volatility", direction="binary",
         ),
         # ── volume ───────────────────────────────────────────────────────
+        IndicatorSpec(
+            name="volume_ma", func=volume.volume_ma,
+            default_params={"period": 20},
+            output_kind="series", output_keys=("volume_ma",),
+            warmup_bars=20, category="volume", direction="bullish_high",
+        ),
+        IndicatorSpec(
+            name="vwma", func=volume.vwma,
+            default_params={"period": 20},
+            output_kind="series", output_keys=("vwma",),
+            warmup_bars=20, category="volume", direction="bullish_high",
+        ),
+        IndicatorSpec(
+            name="vwap", func=volume.vwap,
+            default_params={},
+            output_kind="series", output_keys=("vwap",),
+            warmup_bars=1, category="volume", direction="bullish_high",
+            timeframes=("5m",),
+        ),
+        IndicatorSpec(
+            name="auto_anchored_vwap", func=volume.auto_anchored_vwap,
+            default_params={"lookback": 50},
+            output_kind="frame",
+            output_keys=("avwap_from_high", "avwap_from_low"),
+            warmup_bars=1, category="volume", direction="level",
+        ),
+        IndicatorSpec(
+            name="visible_average_price", func=volume.visible_average_price,
+            default_params={"n_bars": 100, "bins": 24, "value_area_pct": 0.70},
+            output_kind="scalar_dict",
+            output_keys=("poc", "vah", "val", "total_volume"),
+            warmup_bars=1, category="volume", direction="level",
+        ),
         IndicatorSpec(
             name="obv", func=volume.obv,
             default_params={},

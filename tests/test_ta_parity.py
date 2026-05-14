@@ -32,7 +32,9 @@ from indicators.momentum import (
     mfi,
     roc,
     rsi,
+    stoch_rsi,
     trix,
+    tsi,
     williams_r,
 )
 from indicators.trend import (
@@ -212,6 +214,33 @@ class TestMomentumCrossCheck:
     # stages: a smooth-%K stage and a smooth-%D stage. The mapping
     # between ta's outputs and ours can't be made parity-equivalent
     # for both columns simultaneously. Hand tests cover the formula.
+
+    def test_tsi(self, ohlcv):
+        ours = tsi(ohlcv, long_period=25, short_period=13, signal_period=13)
+        theirs = ta.momentum.TSIIndicator(
+            close=ohlcv["close"], window_slow=25, window_fast=13, fillna=False,
+        ).tsi()
+        # ta exposes only the TSI line, not the signal line — so we
+        # cross-check the tsi series only. Both impls use ewm(adjust=False,
+        # min_periods=N) so the steady state should match very tightly.
+        _assert_close(ours["tsi"], theirs, atol=0.01, skip=80, name="tsi")
+
+    def test_stoch_rsi(self, ohlcv):
+        ours = stoch_rsi(
+            ohlcv, rsi_period=14, stoch_period=14, k_smooth=3, d_smooth=3,
+        )
+        ta_sr = ta.momentum.StochRSIIndicator(
+            close=ohlcv["close"], window=14, smooth1=3, smooth2=3, fillna=False,
+        )
+        # ta returns 0..1, we return 0..100 (TV convention) — rescale ta.
+        _assert_close(
+            ours["k"], ta_sr.stochrsi_k() * 100.0,
+            atol=1.5, skip=80, name="stoch_rsi.k",
+        )
+        _assert_close(
+            ours["d"], ta_sr.stochrsi_d() * 100.0,
+            atol=1.5, skip=80, name="stoch_rsi.d",
+        )
 
     def test_mfi(self, ohlcv):
         ours = mfi(ohlcv, period=14)

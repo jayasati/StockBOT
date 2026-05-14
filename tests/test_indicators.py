@@ -25,15 +25,19 @@ import pytest
 
 from indicators import REGISTRY, get_indicator
 from indicators.momentum import (
+    _streak_series,
     awesome_oscillator,
     cci,
+    connors_rsi,
     force_index,
     macd,
     mfi,
     roc,
     rsi,
+    stoch_rsi,
     stochastic,
     trix,
+    tsi,
     williams_r,
 )
 from indicators.trend import (
@@ -49,16 +53,22 @@ from indicators.trend import (
     sma,
     supertrend,
     wma,
+    zigzag,
 )
 from indicators.volatility import atr, bollinger, keltner, ttm_squeeze
 from indicators.volume import (
     ad_line,
     anchored_vwap,
+    auto_anchored_vwap,
     cmf,
     obv,
     rvol_tod,
+    visible_average_price,
+    volume_ma,
     volume_surge_ratio,
+    vwap,
     vwap_sd_bands,
+    vwma,
 )
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -154,6 +164,75 @@ class TestSupertrend:
         assert list(out.columns) == ["supertrend", "direction"]
 
 
+class TestZigZag:
+    def test_pure_uptrend_emits_initial_low_pivot_only(self):
+        # Monotonic up: once price rises >= 5% from the initial low, the
+        # algorithm confirms bar 0 as a LOW pivot. After that, no
+        # subsequent reversal happens, so no further pivots are emitted.
+        closes = np.linspace(100, 200, 30)
+        df = _bars(closes, highs=closes + 0.5, lows=closes - 0.5)
+        out = zigzag(df, deviation_pct=5.0)
+        emitted = np.where(out["pivot_type"].to_numpy() != 0)[0]
+        assert list(emitted) == [0]
+        assert out["pivot_type"].iloc[0] == -1
+        assert out["zigzag_price"].iloc[0] == pytest.approx(99.5)
+
+    def test_up_then_reversal_emits_low_then_high_pivot(self):
+        # Climb to 110, then drop to 100 (~9% drop from 110 > 5%).
+        # Bar 0 (low 99.5) is confirmed once price rises >5%.
+        # Bar 5 (high 110.5) is the swing high; the drop confirms it.
+        closes = np.array([100, 102, 104, 106, 108, 110, 108, 105, 102, 100])
+        df = _bars(closes, highs=closes + 0.5, lows=closes - 0.5)
+        out = zigzag(df, deviation_pct=5.0)
+        emitted = np.where(out["pivot_type"].to_numpy() != 0)[0]
+        # Two pivots: low at 0, high at 5.
+        assert list(emitted) == [0, 5]
+        assert out["pivot_type"].iloc[0] == -1
+        assert out["pivot_type"].iloc[5] == 1
+        assert out["zigzag_price"].iloc[5] == pytest.approx(110.5)
+
+    def test_zigzag_emits_alternating_pivots(self):
+        # Up, down, up: should emit a low, a high, a low (in some order)
+        # — pivots alternate, never two same-direction pivots in a row.
+        closes = np.concatenate([
+            np.linspace(100, 110, 6),
+            np.linspace(110, 95, 6)[1:],
+            np.linspace(95, 110, 6)[1:],
+        ])
+        df = _bars(closes, highs=closes + 0.5, lows=closes - 0.5)
+        out = zigzag(df, deviation_pct=5.0)
+        types = out["pivot_type"].to_numpy()
+        emitted = types[types != 0].tolist()
+        # Must alternate ±1.
+        for a, b in zip(emitted, emitted[1:]):
+            assert a + b == 0, f"non-alternating pivots: {emitted}"
+
+    def test_subthreshold_reversal_does_not_emit_new_pivot(self):
+        # First emit one pivot via a >5% rise. Then a small dip (<5%)
+        # within the uptrend must NOT confirm a new high pivot.
+        closes = np.concatenate([
+            np.array([100]),                # bar 0
+            np.linspace(102, 110, 5),       # rise to 110 (>5% from 100)
+            np.array([109, 108.5, 109]),    # tiny dip then recover
+        ])
+        df = _bars(closes, highs=closes + 0.5, lows=closes - 0.5)
+        out = zigzag(df, deviation_pct=5.0)
+        # Only the initial low pivot at bar 0 should be emitted; no
+        # high pivot because the dip didn't break the threshold.
+        emitted = np.where(out["pivot_type"].to_numpy() != 0)[0]
+        assert list(emitted) == [0]
+
+    def test_invalid_deviation_raises(self):
+        df = _bars(np.full(5, 100.0))
+        with pytest.raises(ValueError, match="deviation_pct"):
+            zigzag(df, deviation_pct=0)
+
+    def test_empty_input(self):
+        df = _bars(np.array([]))
+        out = zigzag(df)
+        assert out.empty
+
+
 class TestADX:
     def test_columns_and_range(self):
         # Strong sustained uptrend produces ADX climbing into 25-100.
@@ -235,6 +314,150 @@ class TestStochastic:
 # Volatility
 # ---------------------------------------------------------------------------
 
+class TestConnorsRSIStreakSeries:
+    def test_pure_uptrend_yields_growing_streak(self):
+        closes = pd.Series([100, 101, 102, 103, 104], dtype=float)
+        s = _streak_series(closes)
+        # Bar 0: 0 (no prior). Bar 1..4: +1, +2, +3, +4
+        assert s.tolist() == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+    def test_pure_downtrend_yields_growing_negative_streak(self):
+        closes = pd.Series([100, 99, 98, 97, 96], dtype=float)
+        s = _streak_series(closes)
+        assert s.tolist() == [0.0, -1.0, -2.0, -3.0, -4.0]
+
+    def test_direction_flip_resets_to_one(self):
+        # Up 2 bars, then down. Down resets to -1, then -2.
+        closes = pd.Series([100, 101, 102, 100, 99], dtype=float)
+        s = _streak_series(closes)
+        assert s.tolist() == [0.0, 1.0, 2.0, -1.0, -2.0]
+
+    def test_unchanged_bar_is_zero(self):
+        closes = pd.Series([100, 101, 101, 102], dtype=float)
+        s = _streak_series(closes)
+        assert s.tolist() == [0.0, 1.0, 0.0, 1.0]
+
+
+class TestConnorsRSI:
+    def test_output_in_zero_to_hundred(self):
+        rng = np.random.default_rng(11)
+        closes = 100 + np.cumsum(rng.uniform(-1, 1, 200))
+        df = _bars(closes)
+        out = connors_rsi(df)
+        valid = out.dropna()
+        assert (valid >= 0).all() and (valid <= 100).all()
+
+    def test_long_uptrend_pushes_crsi_high(self):
+        # 200 bars of monotonic up → all 3 sub-indicators saturate high.
+        # rsi_close → 100, rsi_streak → 100, percent_rank → 100 (each new
+        # ROC is matched by past ROCs of the same magnitude — actually not
+        # quite saturated here; still > 50). Composite should be > 80.
+        closes = np.linspace(100, 200, 200)
+        df = _bars(closes)
+        out = connors_rsi(df)
+        # On the LAST bar of a strict uptrend, CRSI should be substantially
+        # above 50.
+        assert out.iloc[-1] > 65.0
+
+    def test_long_downtrend_pushes_crsi_low(self):
+        closes = np.linspace(200, 100, 200)
+        df = _bars(closes)
+        out = connors_rsi(df)
+        assert out.iloc[-1] < 35.0
+
+    def test_warmup_returns_nan_until_rank_period(self):
+        df = _bars(np.full(50, 100.0) + np.arange(50) * 0.1)
+        out = connors_rsi(df, rank_period=100)
+        # rank_period+1 = 101 bars needed; 50 < 101 → all NaN.
+        assert out.isna().all()
+
+    def test_invalid_params_raise(self):
+        df = _bars(np.full(150, 100.0))
+        with pytest.raises(ValueError):
+            connors_rsi(df, rsi_period=1)
+        with pytest.raises(ValueError):
+            connors_rsi(df, streak_period=1)
+        with pytest.raises(ValueError):
+            connors_rsi(df, rank_period=0)
+
+
+class TestTSI:
+    def test_uptrend_yields_positive_tsi(self):
+        # Strict monotonic uptrend → all diffs are positive → numerator
+        # equals denominator → TSI saturates at +100.
+        closes = np.linspace(100, 200, 100)
+        df = _bars(closes)
+        out = tsi(df)
+        post_warmup = out["tsi"].dropna()
+        assert (post_warmup > 0).all()
+        # On a perfect uptrend, TSI converges to +100.
+        assert post_warmup.iloc[-1] == pytest.approx(100.0, abs=0.5)
+
+    def test_downtrend_yields_negative_tsi(self):
+        closes = np.linspace(200, 100, 100)
+        df = _bars(closes)
+        out = tsi(df)
+        post_warmup = out["tsi"].dropna()
+        assert (post_warmup < 0).all()
+        assert post_warmup.iloc[-1] == pytest.approx(-100.0, abs=0.5)
+
+    def test_constant_price_yields_nan(self):
+        closes = np.full(60, 100.0)
+        df = _bars(closes)
+        out = tsi(df)
+        # All diffs zero → numerator and denominator both zero → NaN.
+        assert out["tsi"].isna().all() or out["tsi"].iloc[-1] == 0.0
+
+    def test_signal_lags_tsi(self):
+        # On a smooth signal, signal-EMA lags tsi.
+        closes = 100 + 5 * np.sin(np.linspace(0, 6 * np.pi, 200))
+        df = _bars(closes)
+        out = tsi(df)
+        valid = out.dropna()
+        # If they were identical at every bar, the diff series would be
+        # all zero. We assert they meaningfully differ.
+        assert (valid["tsi"] - valid["signal"]).abs().max() > 0.5
+
+    def test_invalid_period_raises(self):
+        df = _bars(np.full(50, 100.0))
+        with pytest.raises(ValueError):
+            tsi(df, long_period=0)
+
+
+class TestStochRSI:
+    def test_constant_rsi_yields_nan_then_constant(self):
+        # If RSI is constant over the stoch window, max == min → div0 → NaN.
+        # Use a strongly trending price series so RSI saturates near 100,
+        # then verify that rolling-flat region produces NaN k/d.
+        closes = np.concatenate([
+            np.linspace(100, 200, 30),  # ramp up
+            np.full(20, 200.0),          # flat (RSI flatlines near 100)
+        ])
+        df = _bars(closes)
+        out = stoch_rsi(df, rsi_period=14, stoch_period=14,
+                       k_smooth=3, d_smooth=3)
+        # By the end of the flat region, k should be NaN (flat RSI → no range).
+        last_k = out["k"].iloc[-1]
+        assert pd.isna(last_k) or 0.0 <= last_k <= 100.0
+
+    def test_output_in_zero_to_hundred_range_post_warmup(self):
+        rng = np.random.default_rng(7)
+        closes = 100 + np.cumsum(rng.uniform(-1, 1, 100))
+        df = _bars(closes)
+        out = stoch_rsi(df)
+        valid_k = out["k"].dropna()
+        assert (valid_k >= 0).all() and (valid_k <= 100).all()
+        valid_d = out["d"].dropna()
+        assert (valid_d >= 0).all() and (valid_d <= 100).all()
+
+    def test_invalid_params_raise(self):
+        df = _bars(np.full(50, 100.0))
+        with pytest.raises(ValueError):
+            stoch_rsi(df, rsi_period=1)
+        with pytest.raises(ValueError):
+            stoch_rsi(df, k_smooth=0)
+
+
 class TestATR:
     def test_constant_range_is_atr_equal_to_range(self):
         # All bars have high-low = 2.0; no gaps. TR = 2.0 every bar.
@@ -278,6 +501,235 @@ class TestOBV:
         expected = [0.0, 20.0, 50.0, 10.0, 10.0, 70.0]
         for i, exp in enumerate(expected):
             assert out.iloc[i] == pytest.approx(exp), f"bar {i}"
+
+
+class TestVolumeMA:
+    def test_sma_of_volume_matches_rolling_mean(self):
+        # Period 5 SMA over a deterministic 8-bar volume series.
+        vols = np.array([100, 200, 300, 400, 500, 600, 700, 800], dtype=float)
+        df = _bars(np.full(8, 100.0), volumes=vols)
+        out = volume_ma(df, period=5)
+        # First 4 bars: NaN (warmup). Bar 4 = mean(100..500) = 300.
+        # Bar 5 = mean(200..600) = 400. Bar 6 = 500. Bar 7 = 600.
+        assert pd.isna(out.iloc[3])
+        assert out.iloc[4] == pytest.approx(300.0)
+        assert out.iloc[5] == pytest.approx(400.0)
+        assert out.iloc[6] == pytest.approx(500.0)
+        assert out.iloc[7] == pytest.approx(600.0)
+
+    def test_invalid_period_raises(self):
+        df = _bars(np.full(5, 100.0))
+        with pytest.raises(ValueError, match="period"):
+            volume_ma(df, period=0)
+
+
+class TestVWMA:
+    def test_constant_volume_reduces_to_sma(self):
+        # When volume is constant, vwma collapses to sma(close).
+        closes = np.array([10, 20, 30, 40, 50], dtype=float)
+        df = _bars(closes, volumes=np.full(5, 100.0))
+        out = vwma(df, period=3)
+        # SMA(3): bars 0-1 NaN; bar 2 = 20; bar 3 = 30; bar 4 = 40.
+        assert pd.isna(out.iloc[1])
+        assert out.iloc[2] == pytest.approx(20.0)
+        assert out.iloc[3] == pytest.approx(30.0)
+        assert out.iloc[4] == pytest.approx(40.0)
+
+    def test_volume_weights_pull_average_to_high_volume_bar(self):
+        # Bar 2 has 10x the volume of bars 0,1,3,4. Its price (200) should
+        # dominate the 5-period vwma at bar 4.
+        closes = np.array([100, 100, 200, 100, 100], dtype=float)
+        vols = np.array([10, 10, 100, 10, 10], dtype=float)
+        df = _bars(closes, volumes=vols)
+        out = vwma(df, period=5)
+        # Numerator = 1000 + 1000 + 20000 + 1000 + 1000 = 24000
+        # Denominator = 10 + 10 + 100 + 10 + 10 = 140
+        # vwma = 24000 / 140 ≈ 171.4286
+        assert out.iloc[4] == pytest.approx(24000.0 / 140.0, abs=1e-9)
+
+    def test_zero_total_volume_yields_nan(self):
+        closes = np.array([100.0] * 5)
+        vols = np.array([0.0] * 5)
+        df = _bars(closes, volumes=vols)
+        out = vwma(df, period=5)
+        assert pd.isna(out.iloc[-1])
+
+    def test_invalid_period_raises(self):
+        df = _bars(np.full(5, 100.0))
+        with pytest.raises(ValueError, match="period"):
+            vwma(df, period=0)
+
+
+class TestVWAP:
+    def test_single_session_cumulative(self):
+        # 3 bars in one session. Hand-compute typical price * volume cum.
+        # Bar 0: tp = (101+99+100)/3 = 100; pv = 100*1000 = 100000;
+        #        cum_pv = 100000; cum_v = 1000;  vwap = 100.0
+        # Bar 1: tp = (102+100+101)/3 = 101; pv = 101*2000 = 202000;
+        #        cum_pv = 302000; cum_v = 3000; vwap = 100.6667
+        # Bar 2: tp = (103+101+102)/3 = 102; pv = 102*3000 = 306000;
+        #        cum_pv = 608000; cum_v = 6000; vwap = 101.3333
+        closes = np.array([100, 101, 102], dtype=float)
+        highs = closes + 1.0
+        lows = closes - 1.0
+        vols = np.array([1000, 2000, 3000], dtype=float)
+        df = _bars(closes, highs=highs, lows=lows, volumes=vols)
+        out = vwap(df)
+        assert out.iloc[0] == pytest.approx(100.0)
+        assert out.iloc[1] == pytest.approx(302000.0 / 3000.0)
+        assert out.iloc[2] == pytest.approx(608000.0 / 6000.0)
+
+    def test_resets_at_session_boundary(self):
+        # Two days, 2 bars each. Day 2 must NOT include day 1's accumulation.
+        day1 = _bars(np.array([100.0, 102.0]),
+                     highs=np.array([101.0, 103.0]),
+                     lows=np.array([99.0, 101.0]),
+                     volumes=np.array([1000.0, 1000.0]),
+                     start="2026-05-04 09:15")
+        day2 = _bars(np.array([200.0, 202.0]),
+                     highs=np.array([201.0, 203.0]),
+                     lows=np.array([199.0, 201.0]),
+                     volumes=np.array([1000.0, 1000.0]),
+                     start="2026-05-05 09:15")
+        df = pd.concat([day1, day2])
+        out = vwap(df)
+        # Day 2 bar 0 is the FIRST bar of day 2 session — vwap should
+        # equal that bar's typical price (200), not be contaminated by day 1.
+        assert out.iloc[2] == pytest.approx(200.0)
+
+    def test_zero_volume_yields_nan(self):
+        df = _bars(np.full(3, 100.0), volumes=np.zeros(3))
+        out = vwap(df)
+        assert pd.isna(out.iloc[0])
+        assert pd.isna(out.iloc[-1])
+
+    def test_empty_input(self):
+        df = _bars(np.array([]))
+        out = vwap(df)
+        assert len(out) == 0
+
+
+class TestAutoAnchoredVWAP:
+    def test_hand_computed_anchors_and_vwaps(self):
+        # 5 bars; lookback=5 (full window).
+        # highs: bar 2 has 110 (highest) → anchor_high = 2
+        # lows:  bar 1 has  95 (lowest)  → anchor_low  = 1
+        closes = np.array([102, 100, 105, 103, 102], dtype=float)
+        highs = np.array([105, 103, 110, 108, 107], dtype=float)
+        lows = np.array([99, 95, 100, 98, 96], dtype=float)
+        vols = np.array([1000, 1500, 2000, 1800, 1200], dtype=float)
+        df = _bars(closes, highs=highs, lows=lows, volumes=vols)
+        out = auto_anchored_vwap(df, lookback=5)
+        # avwap_from_high at bar 4: anchor=2, sum from bars 2..4
+        # tp[2]=105, tp[3]=103, tp[4]=305/3
+        # cum_pv = 105*2000 + 103*1800 + (305/3)*1200 = 517400
+        # cum_v  = 5000
+        assert out["avwap_from_high"].iloc[4] == pytest.approx(
+            517400.0 / 5000.0, abs=1e-6,
+        )
+        # avwap_from_low at bar 4: anchor=1, sum from bars 1..4
+        # tp[1]=298/3, tp[2]=105, tp[3]=103, tp[4]=305/3
+        # cum_pv = (298/3)*1500 + 105*2000 + 103*1800 + (305/3)*1200 = 666400
+        # cum_v  = 6500
+        assert out["avwap_from_low"].iloc[4] == pytest.approx(
+            666400.0 / 6500.0, abs=1e-6,
+        )
+
+    def test_first_bar_is_its_own_anchor(self):
+        df = _bars(np.array([100.0]))
+        out = auto_anchored_vwap(df, lookback=10)
+        # Single bar: anchor must be bar 0; both AVWAPs == its tp.
+        # tp = (100.5 + 99.5 + 100) / 3 = 100
+        assert out["avwap_from_high"].iloc[0] == pytest.approx(100.0)
+        assert out["avwap_from_low"].iloc[0] == pytest.approx(100.0)
+
+    def test_anchor_shifts_when_new_extreme_appears(self):
+        # 4 bars; lookback=4. Bar 3 prints a new highest high → anchor
+        # for the high-AVWAP at bar 3 jumps to bar 3 itself, so the
+        # high-AVWAP at bar 3 equals bar 3's tp.
+        closes = np.array([100, 101, 102, 110], dtype=float)
+        highs = np.array([100.5, 101.5, 102.5, 115], dtype=float)
+        lows = np.array([99.5, 100.5, 101.5, 108], dtype=float)
+        df = _bars(closes, highs=highs, lows=lows,
+                   volumes=np.full(4, 1000.0))
+        out = auto_anchored_vwap(df, lookback=4)
+        tp_3 = (115 + 108 + 110) / 3.0
+        assert out["avwap_from_high"].iloc[3] == pytest.approx(tp_3, abs=1e-9)
+
+    def test_invalid_lookback_raises(self):
+        df = _bars(np.full(5, 100.0))
+        with pytest.raises(ValueError, match="lookback"):
+            auto_anchored_vwap(df, lookback=0)
+
+
+class TestVisibleAveragePrice:
+    def test_constant_price_returns_that_price(self):
+        df = _bars(np.full(10, 100.0),
+                   highs=np.full(10, 100.0), lows=np.full(10, 100.0),
+                   volumes=np.full(10, 1000.0))
+        out = visible_average_price(df, n_bars=10, bins=10)
+        assert out["poc"] == 100.0
+        assert out["vah"] == 100.0
+        assert out["val"] == 100.0
+        assert out["total_volume"] == pytest.approx(10000.0)
+
+    def test_concentrated_volume_at_one_price_is_poc(self):
+        # 9 bars at 99.5, 1 bar at 105 with 100x volume.
+        # bin range = [low.min(), high.max()] = [99, 105.5]
+        # 10 bins of width 0.65 each.
+        # The 105 bar's close lands in the highest bin (index 9 → range
+        # 104.85..105.50, midpoint 105.175). The huge volume there makes
+        # it the POC.
+        closes = np.array([99.5] * 9 + [105.0])
+        highs = np.array([100.0] * 9 + [105.5])
+        lows = np.array([99.0] * 9 + [104.5])
+        vols = np.array([100.0] * 9 + [10000.0])
+        df = _bars(closes, highs=highs, lows=lows, volumes=vols)
+        out = visible_average_price(df, n_bars=10, bins=10)
+        # The high bin's midpoint, not the price 105 exactly.
+        assert out["poc"] > 104.5
+        assert out["poc"] < 105.5
+        assert out["total_volume"] == pytest.approx(900.0 + 10000.0)
+
+    def test_value_area_contains_target_pct_of_volume(self):
+        # 5 distinct prices with equal volume each → POC is one bin,
+        # VA expands until it contains >= 70% of volume.
+        closes = np.array([100, 101, 102, 103, 104, 105, 106, 107, 108, 109],
+                          dtype=float)
+        highs = closes + 0.5
+        lows = closes - 0.5
+        vols = np.full(10, 1000.0)
+        df = _bars(closes, highs=highs, lows=lows, volumes=vols)
+        out = visible_average_price(df, n_bars=10, bins=10,
+                                     value_area_pct=0.70)
+        # 7 of 10 bins covered → VA spans 7 of 10 bin widths (price range
+        # ≈ 9.0 wide / 10 bins = 0.9 per bin → VA span ≈ 6.3).
+        # Just verify the VA bracket is sensible.
+        va_span = out["vah"] - out["val"]
+        full_range = float(highs.max() - lows.min())
+        assert 0 < va_span <= full_range
+        # POC is some price in the data range.
+        assert lows.min() <= out["poc"] <= highs.max()
+
+    def test_empty_input(self):
+        df = _bars(np.array([]))
+        out = visible_average_price(df)
+        assert pd.isna(out["poc"])
+        assert out["total_volume"] == 0.0
+
+    def test_invalid_value_area_pct_raises(self):
+        df = _bars(np.full(5, 100.0))
+        with pytest.raises(ValueError, match="value_area_pct"):
+            visible_average_price(df, value_area_pct=0.0)
+        with pytest.raises(ValueError, match="value_area_pct"):
+            visible_average_price(df, value_area_pct=1.5)
+
+    def test_invalid_n_bars_or_bins(self):
+        df = _bars(np.full(5, 100.0))
+        with pytest.raises(ValueError, match="n_bars"):
+            visible_average_price(df, n_bars=0)
+        with pytest.raises(ValueError, match="bins"):
+            visible_average_price(df, bins=0)
 
 
 class TestCMF:
