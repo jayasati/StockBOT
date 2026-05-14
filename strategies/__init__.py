@@ -16,6 +16,7 @@ from .base import Signal, SignalKind, Strategy
 from .bollinger_bands import BollingerBandsDirected
 from .ema_cross import EMACross
 from .macd_cross import MACDCross
+from .macd_rsi_ema import MacdRsiEma
 from .orb import OpeningRangeBreakout
 from .rsi_cross import RSICross
 from .vwap_ema_volume import VwapEmaVolume
@@ -25,6 +26,7 @@ REGISTRY: dict[str, type[Strategy]] = {
     BollingerBandsDirected.name: BollingerBandsDirected,
     EMACross.name: EMACross,
     MACDCross.name: MACDCross,
+    MacdRsiEma.name: MacdRsiEma,
     OpeningRangeBreakout.name: OpeningRangeBreakout,
     RSICross.name: RSICross,
     VwapEmaVolume.name: VwapEmaVolume,
@@ -47,6 +49,7 @@ __all__ = [
     "BollingerBandsDirected",
     "EMACross",
     "MACDCross",
+    "MacdRsiEma",
     "OpeningRangeBreakout",
     "REGISTRY",
     "RSICross",

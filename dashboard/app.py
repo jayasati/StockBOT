@@ -69,6 +69,9 @@ st.markdown(
 - **VWAP + EMA + Volume** — Per-symbol backtest of the `vwap_ema_volume`
   strategy (VWAP reclaim/rejection + EMA 9>21 + volume spike, 1.5×ATR
   target). Per-stock scorecard, equity curve, and trades drilldown.
+- **MACD + RSI + EMA** — Per-symbol backtest of the `macd_rsi_ema`
+  strategy (MACD histogram flip + RSI 50-cross + EMA 20 trend filter,
+  first-90-min entry window). Hour-of-day + day-of-week WR breakdowns.
 """
 )
 
