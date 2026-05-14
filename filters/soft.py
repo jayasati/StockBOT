@@ -69,9 +69,13 @@ def vix_filter(
     """Volatility-regime multiplier. Tiered:
 
       VIX < 12          → 1.05 (low-vol trend continuation)
-      VIX 12-16         → no change (most common state)
-      VIX 16-20         → 0.85 (rising vol, mixed regime)
-      VIX > 20          → 0.6  (panic / news-driven, microstructure unreliable)
+      VIX 12-20         → no change (most common state)
+      VIX 20-25         → 0.85 (elevated vol regime, demote setups)
+      VIX >= 25         → 0.6  (panic / news-driven, microstructure unreliable)
+
+    Thresholds were bumped from the original 16/20 to 20/25 because
+    Indian VIX historical median sits ~14-18 — the original 16 cutoff
+    fired on every signal in normal-to-mildly-elevated tapes.
     """
     v = ctx.vix
     if v is None:

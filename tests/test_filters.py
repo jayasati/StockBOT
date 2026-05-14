@@ -741,12 +741,14 @@ class TestVixFilter:
 
     def test_high_vix_demotes(self):
         from filters.soft import vix_filter
-        ctx = _stub_ctx(vix=18.0)
+        # Threshold is VIX_HIGH_THRESHOLD=20, panic at 25.
+        ctx = _stub_ctx(vix=21.0)
         assert vix_filter(_stub_signals(), ctx) == ("vix_high", 0.85)
 
     def test_panic_vix_heavy_demote(self):
         from filters.soft import vix_filter
-        ctx = _stub_ctx(vix=22.0)
+        # VIX_PANIC_THRESHOLD=25.
+        ctx = _stub_ctx(vix=26.0)
         assert vix_filter(_stub_signals(), ctx) == ("vix_panic", 0.6)
 
     def test_missing_vix_fails_open(self):
@@ -827,7 +829,7 @@ class TestAdxKillCounterTrend:
         from filters.soft import adx_kill_counter_trend
         s = _stub_signals(side="LONG")
         s.snapshot = _stub_snapshot(
-            adx_5m=54.0, adx_5m_di_plus=15.0, adx_5m_di_minus=35.0,
+            adx_5m_adx=54.0, adx_5m_di_plus=15.0, adx_5m_di_minus=35.0,
         )
         assert adx_kill_counter_trend(s, _stub_ctx()) == (
             "adx_counter_trend", 0.4,
@@ -838,7 +840,7 @@ class TestAdxKillCounterTrend:
         from filters.soft import adx_kill_counter_trend
         s = _stub_signals(side="SHORT")
         s.snapshot = _stub_snapshot(
-            adx_5m=54.0, adx_5m_di_plus=35.0, adx_5m_di_minus=15.0,
+            adx_5m_adx=54.0, adx_5m_di_plus=35.0, adx_5m_di_minus=15.0,
         )
         assert adx_kill_counter_trend(s, _stub_ctx()) == (
             "adx_counter_trend", 0.4,
@@ -849,7 +851,7 @@ class TestAdxKillCounterTrend:
         from filters.soft import adx_kill_counter_trend
         s = _stub_signals(side="LONG")
         s.snapshot = _stub_snapshot(
-            adx_5m=54.0, adx_5m_di_plus=35.0, adx_5m_di_minus=15.0,
+            adx_5m_adx=54.0, adx_5m_di_plus=35.0, adx_5m_di_minus=15.0,
         )
         assert adx_kill_counter_trend(s, _stub_ctx()) is None
 
@@ -859,7 +861,7 @@ class TestAdxKillCounterTrend:
         from filters.soft import adx_kill_counter_trend
         s = _stub_signals(side="LONG")
         s.snapshot = _stub_snapshot(
-            adx_5m=35.0, adx_5m_di_plus=15.0, adx_5m_di_minus=30.0,
+            adx_5m_adx=35.0, adx_5m_di_plus=15.0, adx_5m_di_minus=30.0,
         )
         assert adx_kill_counter_trend(s, _stub_ctx()) is None
 
@@ -882,20 +884,20 @@ class TestAdxWeakTrend:
     def test_weak_adx_demotes(self):
         from filters.soft import adx_weak_trend
         s = _stub_signals()
-        s.snapshot = _stub_snapshot(adx_5m=15.0)
+        s.snapshot = _stub_snapshot(adx_5m_adx=15.0)
         assert adx_weak_trend(s, _stub_ctx()) == ("adx_weak", 0.7)
 
     def test_strong_adx_no_penalty(self):
         from filters.soft import adx_weak_trend
         s = _stub_signals()
-        s.snapshot = _stub_snapshot(adx_5m=35.0)
+        s.snapshot = _stub_snapshot(adx_5m_adx=35.0)
         assert adx_weak_trend(s, _stub_ctx()) is None
 
     def test_at_threshold_boundary(self):
         """ADX = 20 sharp → no penalty (boundary excluded)."""
         from filters.soft import adx_weak_trend
         s = _stub_signals()
-        s.snapshot = _stub_snapshot(adx_5m=20.0)
+        s.snapshot = _stub_snapshot(adx_5m_adx=20.0)
         assert adx_weak_trend(s, _stub_ctx()) is None
 
 

@@ -253,6 +253,21 @@ def _compute_one(
             snapshot.insufficient.append(key)
         return
 
+    if spec.output_kind == "scalar_dict":
+        # Non-level scalar-dict indicators (e.g. visible_average_price)
+        # return a flat {col: value} mapping, NOT a bar-indexed frame.
+        # Namespace each column under the {name}_{tf}_{col} key so the
+        # snapshot stays consistent with frame-output indicators.
+        for col in spec.output_keys:
+            v = out.get(col) if isinstance(out, dict) else None
+            key = _frame_key(spec, tf, col)
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                snapshot.values[key] = None
+                snapshot.insufficient.append(key)
+            else:
+                snapshot.values[key] = float(v)
+        return
+
     # frame
     cols = _last_row_dict(out, spec.output_keys)
     for col, v in cols.items():

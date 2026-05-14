@@ -149,10 +149,15 @@ def test_every_registry_indicator_appears_in_snapshot():
         session_date=date(2026, 5, 4),
     )
     seen_indicators: set[str] = set()
+    # Iterate REGISTRY longest-name-first so that, for example,
+    # "vwap_sd_bands_5m_plus_1" matches the longer "vwap_sd_bands"
+    # before the shorter "vwap" prefix — names are unique, so this
+    # disambiguates without changing semantics.
+    sorted_specs = sorted(REGISTRY.items(), key=lambda p: -len(p[0]))
     for key in snap.values:
         # Levels keys won't have a TF suffix; just check the registered
         # indicator's output_keys map into snap.values somehow.
-        for name, spec in REGISTRY.items():
+        for name, spec in sorted_specs:
             if spec.category == "level":
                 # Level keys are computed; check presence via the
                 # registry's output_keys round-trip.
