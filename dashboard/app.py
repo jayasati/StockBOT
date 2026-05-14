@@ -75,6 +75,9 @@ st.markdown(
 - **ADX + Supertrend + ATR** — Per-symbol backtest of the
   `adx_supertrend_atr` strategy (Supertrend flip + ADX > 25 & rising +
   DMI bias, 1×ATR stop loss). Trades only when trend strength is real.
+- **VWAP + RSI + Order Flow** — High-conviction scalp setup. VWAP
+  support hold + RSI 40-50 bouncing + bullish engulf (or mirror short).
+  1×ATR target. OI / PCR confluence is a TODO.
 """
 )
 

@@ -21,6 +21,7 @@ from .macd_rsi_ema import MacdRsiEma
 from .orb import OpeningRangeBreakout
 from .rsi_cross import RSICross
 from .vwap_ema_volume import VwapEmaVolume
+from .vwap_rsi_orderflow import VwapRsiOrderflow
 
 REGISTRY: dict[str, type[Strategy]] = {
     AdxSupertrendAtr.name: AdxSupertrendAtr,
@@ -32,6 +33,7 @@ REGISTRY: dict[str, type[Strategy]] = {
     OpeningRangeBreakout.name: OpeningRangeBreakout,
     RSICross.name: RSICross,
     VwapEmaVolume.name: VwapEmaVolume,
+    VwapRsiOrderflow.name: VwapRsiOrderflow,
 }
 
 
@@ -61,6 +63,7 @@ __all__ = [
     "Strategy",
     "Trade",
     "VwapEmaVolume",
+    "VwapRsiOrderflow",
     "rollup_by_strategy",
     "run_backtest",
     "run_sweep",
