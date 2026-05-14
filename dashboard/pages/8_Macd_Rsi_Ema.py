@@ -241,48 +241,87 @@ def _wr_bar_chart(df: pd.DataFrame, group_col: str, title: str) -> go.Figure:
 
 with tab_summary:
     st.subheader("Per-symbol results")
-    summary_show = uni_summary.copy()
+
+    # ---- Filters ----
+    summary_full = uni_summary.copy()
     for col in ("win_rate_pct", "total_return_pct", "max_dd_pct"):
-        if col in summary_show.columns:
-            summary_show[col] = summary_show[col].round(2)
-    if "ending_equity" in summary_show.columns:
-        summary_show["ending_equity"] = summary_show["ending_equity"].round(0)
-    summary_show = summary_show.sort_values(
+        if col in summary_full.columns:
+            summary_full[col] = summary_full[col].round(2)
+    if "ending_equity" in summary_full.columns:
+        summary_full["ending_equity"] = summary_full["ending_equity"].round(0)
+
+    max_trades = int(summary_full["trades"].max()) if not summary_full.empty else 0
+    ret_min = float(summary_full["total_return_pct"].min()) if not summary_full.empty else 0.0
+    ret_max = float(summary_full["total_return_pct"].max()) if not summary_full.empty else 0.0
+    ret_lo = float(np.floor(ret_min * 100) / 100)
+    ret_hi = float(np.ceil(ret_max * 100) / 100)
+
+    fc1, fc2, fc3 = st.columns(3)
+    with fc1:
+        min_trades = st.number_input(
+            "Min trades", min_value=0, max_value=max_trades, value=5, step=1,
+            key="macd_min_trades",
+        )
+    with fc2:
+        wr_range = st.slider(
+            "Win rate % range", 0.0, 100.0, (0.0, 100.0), step=1.0,
+            key="macd_wr_range",
+        )
+    with fc3:
+        ret_range = st.slider(
+            "Total return % range", ret_lo, ret_hi, (ret_lo, ret_hi),
+            step=0.1, key="macd_ret_range",
+        )
+
+    mask = (
+        (summary_full["trades"] >= min_trades)
+        & summary_full["win_rate_pct"].between(*wr_range)
+        & summary_full["total_return_pct"].between(*ret_range)
+    )
+    summary_show = summary_full[mask].sort_values(
         "total_return_pct", ascending=False,
     ).reset_index(drop=True)
-    st.dataframe(
-        summary_show, width="stretch",
-        height=min(640, 40 + 36 * len(summary_show)),
+    st.caption(
+        f"Showing **{len(summary_show)}** of {len(summary_full)} symbols "
+        f"after filters."
     )
 
-    cc1, cc2 = st.columns(2)
-    with cc1:
-        top = summary_show.head(20)
-        fig = go.Figure(go.Bar(
-            x=top["total_return_pct"], y=top["symbol"], orientation="h",
-            marker_color="#26a69a",
-        ))
-        fig.update_layout(
-            template="plotly_dark", height=520, title="Top 20 by total return %",
-            margin=dict(l=10, r=10, t=40, b=10),
-            xaxis_title="Total return %", yaxis_title="",
-            yaxis=dict(autorange="reversed"),
+    if summary_show.empty:
+        st.info("No symbols match the current filters. Widen the ranges.")
+    else:
+        st.dataframe(
+            summary_show, width="stretch",
+            height=min(640, 40 + 36 * len(summary_show)),
         )
-        st.plotly_chart(fig, width="stretch")
-    with cc2:
-        worst = summary_show.tail(20).iloc[::-1]
-        fig = go.Figure(go.Bar(
-            x=worst["total_return_pct"], y=worst["symbol"], orientation="h",
-            marker_color="#ef5350",
-        ))
-        fig.update_layout(
-            template="plotly_dark", height=520,
-            title="Bottom 20 by total return %",
-            margin=dict(l=10, r=10, t=40, b=10),
-            xaxis_title="Total return %", yaxis_title="",
-            yaxis=dict(autorange="reversed"),
-        )
-        st.plotly_chart(fig, width="stretch")
+
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            top = summary_show.head(20)
+            fig = go.Figure(go.Bar(
+                x=top["total_return_pct"], y=top["symbol"], orientation="h",
+                marker_color="#26a69a",
+            ))
+            fig.update_layout(
+                template="plotly_dark", height=520, title="Top 20 by total return %",
+                margin=dict(l=10, r=10, t=40, b=10),
+                xaxis_title="Total return %", yaxis_title="",
+                yaxis=dict(autorange="reversed"),
+            )
+            st.plotly_chart(fig, width="stretch")
+        with cc2:
+            worst = summary_show.tail(20).iloc[::-1]
+            fig = go.Figure(go.Bar(
+                x=worst["total_return_pct"], y=worst["symbol"], orientation="h",
+                marker_color="#ef5350",
+            ))
+            fig.update_layout(
+                template="plotly_dark", height=520,
+                title="Bottom 20 by total return %",
+                margin=dict(l=10, r=10, t=40, b=10),
+                xaxis_title="Total return %", yaxis_title="",
+                yaxis=dict(autorange="reversed"),
+            )
+            st.plotly_chart(fig, width="stretch")
 
 
 # ---- Tab 2 — By hour of day ----------------------------------------------

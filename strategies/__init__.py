@@ -10,6 +10,7 @@ only emit signals; the engine handles fills, reversals, costs, and the
 max-intraday-loss kill switch."""
 from __future__ import annotations
 
+from .adx_supertrend_atr import AdxSupertrendAtr
 from .backtest import BacktestResult, Trade, run_backtest
 from .bar_up_dn import BarUpDn
 from .base import Signal, SignalKind, Strategy
@@ -22,6 +23,7 @@ from .rsi_cross import RSICross
 from .vwap_ema_volume import VwapEmaVolume
 
 REGISTRY: dict[str, type[Strategy]] = {
+    AdxSupertrendAtr.name: AdxSupertrendAtr,
     BarUpDn.name: BarUpDn,
     BollingerBandsDirected.name: BollingerBandsDirected,
     EMACross.name: EMACross,
@@ -44,6 +46,7 @@ run_sweep, rollup_by_strategy = _import_sweep()
 
 
 __all__ = [
+    "AdxSupertrendAtr",
     "BacktestResult",
     "BarUpDn",
     "BollingerBandsDirected",

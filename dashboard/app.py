@@ -72,6 +72,9 @@ st.markdown(
 - **MACD + RSI + EMA** — Per-symbol backtest of the `macd_rsi_ema`
   strategy (MACD histogram flip + RSI 50-cross + EMA 20 trend filter,
   first-90-min entry window). Hour-of-day + day-of-week WR breakdowns.
+- **ADX + Supertrend + ATR** — Per-symbol backtest of the
+  `adx_supertrend_atr` strategy (Supertrend flip + ADX > 25 & rising +
+  DMI bias, 1×ATR stop loss). Trades only when trend strength is real.
 """
 )
 
