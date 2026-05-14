@@ -18,6 +18,7 @@ from .ema_cross import EMACross
 from .macd_cross import MACDCross
 from .orb import OpeningRangeBreakout
 from .rsi_cross import RSICross
+from .vwap_ema_volume import VwapEmaVolume
 
 REGISTRY: dict[str, type[Strategy]] = {
     BarUpDn.name: BarUpDn,
@@ -26,6 +27,7 @@ REGISTRY: dict[str, type[Strategy]] = {
     MACDCross.name: MACDCross,
     OpeningRangeBreakout.name: OpeningRangeBreakout,
     RSICross.name: RSICross,
+    VwapEmaVolume.name: VwapEmaVolume,
 }
 
 
@@ -52,6 +54,7 @@ __all__ = [
     "SignalKind",
     "Strategy",
     "Trade",
+    "VwapEmaVolume",
     "rollup_by_strategy",
     "run_backtest",
     "run_sweep",

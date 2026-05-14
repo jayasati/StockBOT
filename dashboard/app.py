@@ -66,6 +66,9 @@ st.markdown(
   factor, per-stock leaderboard, daily P&L heatmap.
 - **Verify** — Side-by-side TV vs bot indicator comparison across many
   symbols at once. Pinpoints data-source vs math divergences.
+- **VWAP + EMA + Volume** — Per-symbol backtest of the `vwap_ema_volume`
+  strategy (VWAP reclaim/rejection + EMA 9>21 + volume spike, 1.5×ATR
+  target). Per-stock scorecard, equity curve, and trades drilldown.
 """
 )
 

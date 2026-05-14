@@ -156,3 +156,15 @@ In rough order of value:
 6. **Write the feedback loop** — label every alert post-hoc with its 30-minute and 1-day return, and use that to retune weights weekly.
 
 Don't build all six. Build the next one when the absence hurts.
+
+
+  → 🏆 VWAP + EMA + Volume page. Four tabs are live, the universe parquet
+  drives the time-bucket views, and the sidebar drilldown lets you A/B param
+   changes on any single symbol.
+
+  To re-fetch + re-sweep (e.g., after a few days when 60-day window has
+  shifted):
+
+  python scripts/run_vwap_universe.py            # full
+  python scripts/run_vwap_universe.py --no-fetch # cache-only resweep (fast)
+
