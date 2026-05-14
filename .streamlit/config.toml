@@ -1,0 +1,22 @@
+# Streamlit dashboard config — bind to localhost only.
+# DO NOT change server.address to 0.0.0.0 without adding HTTP basic auth
+# (or putting it behind nginx/Cloudflare Tunnel with auth). The dashboard
+# reads paper-trade history and live indicators; treat as confidential.
+
+[server]
+address = "127.0.0.1"
+port = 8501
+headless = true
+runOnSave = false
+fileWatcherType = "poll"
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"
+primaryColor = "#26a69a"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#1a1d24"
+textColor = "#fafafa"
+font = "monospace"
