@@ -123,8 +123,10 @@ def score_trend(
     else:
         st_score = 100.0 if st_dir < 0 else 0.0
 
-    # adx — same polarity for both sides (trend strength)
-    adx = _val(snapshot, "adx_5m")
+    # adx — same polarity for both sides (trend strength).
+    # Registry produces adx_5m_adx (the ADX value column of the
+    # multi-output frame), not adx_5m.
+    adx = _val(snapshot, "adx_5m_adx")
     if adx is None:
         adx_score = None
     else:

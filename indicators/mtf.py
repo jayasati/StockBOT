@@ -47,13 +47,23 @@ _OHLCV_AGG: dict[str, str] = {
     "volume": "sum",
 }
 
+# NSE cash-segment session window (IST). Bars outside this window are
+# dropped before resampling to avoid creating empty buckets for the
+# overnight gap, which would otherwise survive `dropna(how='all')`
+# (sum-of-volume=0 is not NaN) and corrupt every rolling indicator.
+NSE_SESSION_START = "09:15"
+NSE_SESSION_END = "15:30"
+
 
 def resample_ohlcv(bars: pd.DataFrame, target_tf: str) -> pd.DataFrame:
     """Resample to a coarser intraday timeframe.
 
     Identity transform when ``target_tf`` matches the input's native
-    cadence (e.g. 5m → 5m). All-NaN rows (empty resample buckets) are
-    dropped so consumers don't have to filter."""
+    cadence (e.g. 5m → 5m). Empty buckets (no source bar in the window)
+    are dropped via ``subset=['close']`` so consumers don't have to
+    filter — sum-of-volume in an empty bucket is 0, not NaN, so the
+    older ``dropna(how='all')`` passed empty rows through and corrupted
+    every rolling indicator on multi-day inputs."""
     if target_tf not in _RESAMPLE_RULES:
         raise ValueError(
             f"unsupported target_tf {target_tf!r}; "
@@ -63,10 +73,36 @@ def resample_ohlcv(bars: pd.DataFrame, target_tf: str) -> pd.DataFrame:
         return bars.copy()
     if not isinstance(bars.index, pd.DatetimeIndex):
         raise TypeError("bars must have a DatetimeIndex")
+    # Trim to NSE trading hours so multi-day inputs don't generate
+    # midnight ghost-buckets between sessions. Tz-aware indexes only;
+    # naive indexes are passed through (unit tests use synthetic data).
+    if bars.index.tz is not None:
+        bars = bars.between_time(NSE_SESSION_START, NSE_SESSION_END)
+        if bars.empty:
+            return bars.copy()
     rule = _RESAMPLE_RULES[target_tf]
-    out = (
-        bars.resample(rule, label="left", closed="left", origin="start")
-        .agg(_OHLCV_AGG)
-        .dropna(how="all")
-    )
+    # Anchor each day's buckets to the NSE 09:15 IST open so 15m bars
+    # land on 09:15 / 09:30 / 09:45 / … (matching TradingView and the
+    # NSE chart UI) rather than wherever the first multi-day source bar
+    # happens to fall. ``origin='start_day'`` resets the anchor at
+    # midnight; the offset shifts it to 09:15.
+    if bars.index.tz is not None:
+        out = (
+            bars.resample(
+                rule, label="left", closed="left",
+                origin="start_day", offset=pd.Timedelta("9h15min"),
+            )
+            .agg(_OHLCV_AGG)
+            .dropna(subset=["close"])
+        )
+    else:
+        out = (
+            bars.resample(rule, label="left", closed="left", origin="start")
+            .agg(_OHLCV_AGG)
+            .dropna(subset=["close"])
+        )
+    # Re-trim post-resample: anchor + offset can place a 60m bucket
+    # partially outside the session window on subsequent days.
+    if isinstance(out.index, pd.DatetimeIndex) and out.index.tz is not None:
+        out = out.between_time(NSE_SESSION_START, NSE_SESSION_END)
     return out

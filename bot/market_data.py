@@ -55,11 +55,26 @@ def _yf_download(symbols: list[str], period: str, interval: str) -> dict[str, pd
     result: dict[str, pd.DataFrame] = {}
     for sym in symbols:
         try:
-            sub = df[sym] if len(symbols) > 1 else df
+            if len(symbols) > 1:
+                sub = df[sym]
+            else:
+                sub = df
+                # yfinance with group_by="ticker" still returns MultiIndex
+                # columns for single-symbol calls in newer versions
+                # (('Close', 'ALKYLAMINE.NS'), ...). Flatten by dropping
+                # the ticker level so callers get the legacy
+                # ['Open','High','Low','Close','Volume'] shape.
+                if isinstance(sub.columns, pd.MultiIndex):
+                    if sym in sub.columns.get_level_values(-1):
+                        sub = sub.xs(sym, axis=1, level=-1)
+                    elif sym in sub.columns.get_level_values(0):
+                        sub = sub.xs(sym, axis=1, level=0)
+                    else:
+                        sub = sub.droplevel(-1, axis=1)
             sub = sub.dropna()
             if not sub.empty:
                 result[sym] = sub
-        except (KeyError, AttributeError):
+        except (KeyError, AttributeError, ValueError):
             continue
     return result
 

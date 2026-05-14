@@ -133,6 +133,12 @@ def _evaluate_symbol(
         else None
     )
     signals = score_stock(symbol, intraday, daily, snapshot=snapshot)
+    # Phase-7 weighted scorer reads from signals.snapshot. score_stock
+    # consumes the snapshot (for rsi_5m) but does not attach it to the
+    # returned dataclass, so attach it here before score_signal runs.
+    # Without this every indicator-driven sub-criterion silently falls
+    # back to NEUTRAL and the final score never crosses the gate.
+    signals.snapshot = snapshot
     # Phase 9: thread macro context (FII/DII, PCR, VIX, index deltas)
     # onto the signal so ``score_market`` reads from one place. When
     # the live fetcher hasn't populated a field yet (first scan after
@@ -354,16 +360,29 @@ async def scan_once(telegram: Telegram) -> None:
         return
 
     candidates: list[StockSignals] = []
+    failed: list[str] = []
     for symbol in WATCHLIST:
         if symbol not in intraday_data:
             continue
         daily = market_data._daily_cache.get(symbol, pd.DataFrame())
-        signals = _evaluate_symbol(
-            symbol, intraday_data[symbol], daily, fundamentals, unknown_events,
-            market_context=market_context,
-        )
+        try:
+            signals = _evaluate_symbol(
+                symbol, intraday_data[symbol], daily, fundamentals,
+                unknown_events, market_context=market_context,
+            )
+        except Exception:
+            # One bad symbol (e.g. malformed intraday frame from a failed
+            # yfinance seed) must not abort the whole scan. Log + continue.
+            log.exception("evaluate failed for %s; skipping", symbol)
+            failed.append(symbol)
+            continue
         if signals is not None:
             candidates.append(signals)
+    if failed:
+        log.warning(
+            "Scan: %d symbol(s) failed evaluation: %s",
+            len(failed), ", ".join(failed[:10]) + ("…" if len(failed) > 10 else ""),
+        )
 
     candidates.sort(key=lambda s: -s.score)
 

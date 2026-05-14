@@ -1,0 +1,82 @@
+# Manual indicator readings — Indian market session 2026-05-14, 09:15 IST – 11:50 IST.
+# Fill the `expected_value` column with what YOU see on your chart.
+# Leave bot_value and delta blank — `python scripts/compare_indicators.py` fills those.
+#
+# Columns:
+#   reading_time_ist  HH:MM IST when you took the reading from your chart
+#                     (the latest 5m bar moves second-to-second, so this matters)
+#   symbol            bare NSE symbol — BHARTIARTL, MCX, etc. (no .NS suffix needed)
+#   timeframe         5m / 15m / 60m / 1d
+#   indicator         RSI / MACD / MACD_signal / MACD_hist / ATR / ADX /
+#                     DI_plus / DI_minus / VWAP / Stoch_K / Stoch_D / CCI /
+#                     MFI / CMF / BB_upper / BB_middle / BB_lower / BB_percent_B /
+#                     volume_ratio / volume_surge_ratio / supertrend / supertrend_dir /
+#                     pivot / R1 / S1 / PDH / PDL / price / open / high / low /
+#                     close / volume
+#   expected_value    what your chart shows (number; 1.0/-1.0 for supertrend_dir)
+#   bot_value         leave blank — script fills
+#   delta             leave blank — script computes (expected − bot)
+#   source            TV / Fyers / Kite / Dhan / Investing / Chartink / other
+#   notes             optional — e.g. "after 11:45 candle close", "TV chart, EQ data"
+#
+# Add more rows as you go. Delete rows you don't have data for. Order doesn't matter.
+reading_time_ist,symbol,timeframe,indicator,expected_value,bot_value,delta,source,notes
+,BHARTIARTL,5m,price,,,,,
+,BHARTIARTL,5m,RSI,,,,,
+,BHARTIARTL,5m,MACD_hist,,,,,
+,BHARTIARTL,5m,ATR,,,,,
+,BHARTIARTL,5m,ADX,,,,,
+,BHARTIARTL,5m,VWAP,,,,,
+,BHARTIARTL,5m,volume_ratio,,,,,
+,BSE,5m,price,,,,,
+,BSE,5m,RSI,,,,,
+,BSE,5m,MACD_hist,,,,,
+,BSE,5m,ATR,,,,,
+,BSE,5m,ADX,,,,,
+,BSE,5m,VWAP,,,,,
+,BSE,5m,volume_ratio,,,,,
+,CIPLA,5m,price,,,,,
+,CIPLA,5m,RSI,,,,,
+,CIPLA,5m,MACD_hist,,,,,
+,CIPLA,5m,ATR,,,,,
+,CIPLA,5m,ADX,,,,,
+,CIPLA,5m,VWAP,,,,,
+,CIPLA,5m,volume_ratio,,,,,
+,MCX,5m,price,,,,,
+,MCX,5m,RSI,,,,,
+,MCX,5m,MACD_hist,,,,,
+,MCX,5m,ATR,,,,,
+,MCX,5m,ADX,,,,,
+,MCX,5m,VWAP,,,,,
+,MCX,5m,volume_ratio,,,,,
+,GODREJIND,5m,price,,,,,
+,GODREJIND,5m,RSI,,,,,
+,GODREJIND,5m,MACD_hist,,,,,
+,GODREJIND,5m,ATR,,,,,
+,GODREJIND,5m,ADX,,,,,
+,GODREJIND,5m,VWAP,,,,,
+,GODREJIND,5m,volume_ratio,,,,,
+,ADANIPOWER,5m,price,,,,,
+,ADANIPOWER,5m,RSI,,,,,
+,ADANIPOWER,5m,MACD_hist,,,,,
+,ADANIPOWER,5m,ATR,,,,,
+,ADANIPOWER,5m,ADX,,,,,
+,ADANIPOWER,5m,VWAP,,,,,
+,ADANIPOWER,5m,volume_ratio,,,,,
+,HFCL,5m,price,,,,,
+,HFCL,5m,RSI,,,,,
+,HFCL,5m,MACD_hist,,,,,
+,HFCL,5m,ATR,,,,,
+,HFCL,5m,ADX,,,,,
+,HFCL,5m,VWAP,,,,,
+,HFCL,5m,volume_ratio,,,,,
+,ALKYLAMINE,5m,price,,,,,
+,ALKYLAMINE,5m,RSI,,,,,
+,ALKYLAMINE,5m,MACD_hist,,,,,
+,ALKYLAMINE,5m,ATR,,,,,
+,ALKYLAMINE,5m,ADX,,,,,
+,ALKYLAMINE,5m,VWAP,,,,,
+,ALKYLAMINE,5m,volume_ratio,,,,,
+# Examples of additional rows you can add for higher timeframes:
+# 11:30,BHARTIARTL,15m,RSI,68.5,,,TV,
+# 11:00,MCX,1d,price,3290,,,Fyers,prev close

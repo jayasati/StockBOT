@@ -1,0 +1,4 @@
+# Custom watchlist — symbols beyond the Nifty 500 base universe.
+# One symbol per line. Bare ("ALKYLAMINE") or .NS-suffixed both work.
+# Lines starting with # are comments. Blank lines are ignored.
+ALKYLAMINE

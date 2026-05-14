@@ -27,14 +27,17 @@ Banks dominate index gravity in India — if banks are falling,
 even non-bank longs face headwinds."""
 
 VIX_LOW_THRESHOLD = 12.0
-VIX_HIGH_THRESHOLD = 16.0
-VIX_PANIC_THRESHOLD = 20.0
+VIX_HIGH_THRESHOLD = 20.0
+VIX_PANIC_THRESHOLD = 25.0
 VIX_LOW_MULT = 1.05
 """VIX < 12 means complacent markets — slightly favour trend continuations."""
 VIX_HIGH_MULT = 0.85
-"""VIX 16-20: choppy regime, demote setups."""
+"""VIX 20-25: elevated vol regime, demote setups. Indian VIX historical
+median ~14-18 so the previous 16 cutoff fired on every signal in a
+normal-to-mildly-elevated tape."""
 VIX_PANIC_MULT = 0.6
-"""VIX > 20: panic / news-driven; microstructure signals lose."""
+"""VIX > 25: panic / news-driven; microstructure signals lose. Bumped
+from 20 alongside the VIX_HIGH cutoff move."""
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +126,10 @@ def adx_kill_counter_trend(
     snap = signals.snapshot
     if snap is None:
         return None
-    adx = snap.values.get("adx_5m")
+    # Registry produces adx_5m_adx (the ADX value column of the ADX
+    # multi-output frame), not adx_5m. The plain key never existed,
+    # so this filter was silently no-op'd.
+    adx = snap.values.get("adx_5m_adx")
     di_plus = snap.values.get("adx_5m_di_plus")
     di_minus = snap.values.get("adx_5m_di_minus")
     if adx is None or di_plus is None or di_minus is None:
@@ -146,7 +152,7 @@ def adx_weak_trend(
     snap = signals.snapshot
     if snap is None:
         return None
-    adx = snap.values.get("adx_5m")
+    adx = snap.values.get("adx_5m_adx")
     if adx is None or adx >= ADX_WEAK_TREND_THRESHOLD:
         return None
     return ("adx_weak", ADX_WEAK_MULT)
@@ -290,6 +296,28 @@ def mtf_trend_alignment(
     return None
 
 
+ASM_STAGE_ONE_MULT = 0.9
+"""ST-ASM/LT-ASM Stage I imposes 100% margin but trading is allowed.
+Demote 0.9× rather than hard-killing. Stage II+ still hard-kills via
+:func:`bot.suppression.rules._asm_suppresses`."""
+
+
+def asm_stage_one(
+    signals: "StockSignals", ctx: "FilterContext",
+) -> "tuple[str, float] | None":
+    """Apply a soft demote when the symbol is on ASM Stage I (either
+    ST-ASM or LT-ASM). Stage II+ never reaches this filter — the hard
+    suppression layer kills those upstream."""
+    from bot.suppression.rules import get_asm_stage
+    stage = get_asm_stage(signals.symbol)
+    if not stage:
+        return None
+    s = stage.upper()
+    if "STAGE I" in s and "STAGE II" not in s and "STAGE III" not in s:
+        return ("asm_stage_1", ASM_STAGE_ONE_MULT)
+    return None
+
+
 SOFT_FILTERS = (
     adx_kill_counter_trend,
     adx_weak_trend,
@@ -299,4 +327,5 @@ SOFT_FILTERS = (
     bank_nifty_opposite,
     mtf_trend_alignment,
     vix_filter,
+    asm_stage_one,
 )

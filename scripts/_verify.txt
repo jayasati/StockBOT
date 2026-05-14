@@ -1,0 +1,100 @@
+﻿python.exe : NSE option_chain still empty after retries; giving up
+At line:1 char:32
++ ... NG="utf-8"; & 
+"C:\Users\jayra\Desktop\stock_alert_bot\venv\Scripts\py ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (NSE option_chai...ries; givin 
+   g up:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Refreshing daily cache...
+Fetching intraday for ['BHARTIARTL.NS', 'BSE.NS', 'CIPLA.NS', 'MCX.NS', 'ADANIPOWER.NS', 'HFCL.NS']
+
+Market context: nifty=0.1% bn=-0.39% vix=19.02 fii=-4703.15
+Alert threshold: 85.0
+
+==============================================================================================================
+
+BHARTIARTL.NS  price=1833.00  side=LONG
+  components:
+    trend        100.00
+    momentum      62.50
+    volume        40.00
+    volatility    63.19
+    structure     75.50
+    market        42.94
+    news          50.00
+  base score (pre-multipliers): 66.31
+  soft adjustments: [('low_volume', 0.85), ('bank_nifty_opposite', 0.9), ('vix_high', 0.85)]
+  multiplier product: 0.6502
+  FINAL SCORE: 43.12 (threshold 85) (below gate)
+
+BSE.NS  price=4007.60  side=LONG
+  components:
+    trend        100.00
+    momentum      83.50
+    volume        49.08
+    volatility    67.91
+    structure     47.50
+    market        42.94
+    news          50.00
+  base score (pre-multipliers): 69.54
+  soft adjustments: [('bank_nifty_opposite', 0.9), ('vix_high', 0.85)]
+  multiplier product: 0.7650
+  FINAL SCORE: 53.20 (threshold 85) (below gate)
+
+CIPLA.NS  price=1415.80  side=LONG
+  components:
+    trend         76.55
+    momentum      32.50
+    volume        80.00
+    volatility    82.78
+    structure     38.50
+    market        42.94
+    news          50.00
+  base score (pre-multipliers): 58.71
+  soft adjustments: [('already_extended', 0.8), ('bank_nifty_opposite', 0.9), ('vix_high', 0.85)]
+  multiplier product: 0.6120
+  FINAL SCORE: 35.93 (threshold 85) (below gate)
+
+MCX.NS  price=3286.00  side=LONG
+  components:
+    trend         94.61
+    momentum      95.50
+    volume        47.36
+    volatility    75.89
+    structure     61.50
+    market        42.94
+    news          50.00
+  base score (pre-multipliers): 72.54
+  soft adjustments: [('bank_nifty_opposite', 0.9), ('vix_high', 0.85)]
+  multiplier product: 0.7650
+  FINAL SCORE: 55.49 (threshold 85) (below gate)
+
+ADANIPOWER.NS  price=219.59  side=LONG
+  components:
+    trend         51.59
+    momentum      56.50
+    volume        25.00
+    volatility    72.45
+    structure     40.50
+    market        42.94
+    news          50.00
+  base score (pre-multipliers): 48.18
+  soft adjustments: [('low_volume', 0.85), ('bank_nifty_opposite', 0.9), ('vix_high', 0.85)]
+  multiplier product: 0.6502
+  FINAL SCORE: 31.33 (threshold 85) (below gate)
+
+HFCL.NS  price=144.40  side=SHORT
+  components:
+    trend         99.08
+    momentum      95.50
+    volume        40.07
+    volatility    97.77
+    structure     47.50
+    market        62.94
+    news          50.00
+  base score (pre-multipliers): 76.35
+  soft adjustments: [('already_extended', 0.8), ('low_volume', 0.85), ('vix_high', 0.85)]
+  multiplier product: 0.5780
+  FINAL SCORE: 44.13 (threshold 85) (below gate)

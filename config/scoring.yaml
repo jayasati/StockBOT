@@ -60,4 +60,4 @@ component_weights:
   news:
     filing_signal: 1.0
 
-alert_threshold: 85
+alert_threshold: 60

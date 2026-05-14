@@ -8,27 +8,33 @@ from pathlib import Path
 DB_PATH = Path("alerts.db")
 
 
-def _asm_suppresses(stage: str) -> bool:
-    """Decide whether an ASM stage label warrants suppressing alerts.
+_STAGE_2_PLUS = ("STAGE II", "STAGE III", "STAGE IV",
+                 "STAGE 2", "STAGE 3", "STAGE 4")
 
-    NSE has two ASM tracks:
-      - LT-ASM (long-term): Stage I is informational (price band); Stage II
-        adds 100% margin. Suppress only Stage II+.
-      - ST-ASM (short-term): even Stage I imposes 100% margin and Stage II
-        moves to trade-to-trade. Suppress any stage."""
+
+def _asm_suppresses(stage: str) -> bool:
+    """Decide whether an ASM stage label warrants HARD-suppressing alerts.
+
+    Stage I (both ST-ASM and LT-ASM) is downgraded to a soft demote
+    handled by ``filters.soft.asm_stage_one`` — ST-ASM Stage I imposes
+    100% margin but trading is permitted, so killing the alert outright
+    masked legitimate setups (e.g. GODREJIND on 2026-05-14). Stage II+
+    moves the symbol toward trade-to-trade and is still suppressed."""
     s = stage.upper()
-    if "ST-ASM" in s:
-        return True
-    if "LT-ASM" in s:
-        return any(
-            tag in s
-            for tag in ("STAGE II", "STAGE III", "STAGE IV", "STAGE 2", "STAGE 3", "STAGE 4")
-        )
-    # Unknown prefix — be conservative: any stage 2+ suppresses.
-    return any(
-        tag in s
-        for tag in ("STAGE II", "STAGE III", "STAGE IV", "STAGE 2", "STAGE 3", "STAGE 4")
-    )
+    return any(tag in s for tag in _STAGE_2_PLUS)
+
+
+def get_asm_stage(symbol: str) -> str | None:
+    """Return the raw ASM stage string for ``symbol`` (e.g. 'ST-ASM Stage
+    I'), or None when no flag is set. Used by the soft filter so the
+    Stage-I downgrade and the Stage-II+ hard kill read the same row."""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT value FROM risk_flags "
+            "WHERE symbol = ? AND flag_type = 'asm'",
+            (symbol,),
+        ).fetchone()
+    return row[0] if row else None
 
 
 def is_suppressed(symbol: str, cooldown_minutes: int = 60) -> tuple[bool, str]:

@@ -1,0 +1,91 @@
+# Manual indicator readings for BHARTIARTL — Indian market session 2026-05-14.
+# Fill the `expected_value` column with what YOU see on your chart.
+# Leave bot_value and delta blank — the comparison script will fill those.
+#
+# Take ALL readings at the same wall-clock time so they refer to the same
+# bar — e.g. read everything at 11:50 IST. Note that time in `reading_time_ist`
+# (the same value across all rows is fine).
+#
+# Bot uses the LAST CLOSED bar. If your chart shows a live (in-progress) bar,
+# scroll back one to compare apples-to-apples.
+#
+# Source: where you read the value (TV / Fyers / Kite / Dhan / Investing).
+# Setup TV chart for parity: Exchange=NSE, Segment=EQ, Extended hours=OFF,
+# session VWAP not cumulative.
+#
+# Indicator key:
+#   price            current LTP
+#   day_open         today's session open
+#   bar_open/high/low/close/volume   the LAST CLOSED 5m (or 15m/60m) bar
+#   PDH / PDL / PDC  previous trading day high / low / close
+#   VWAP             session VWAP (anchored 09:15 IST)
+#   RSI              Wilder's RSI(14)
+#   MACD             MACD line (12,26,9)
+#   MACD_signal      MACD signal line
+#   MACD_hist        MACD histogram (= MACD − signal)
+#   ATR              Average True Range (14)
+#   ADX / DI_plus / DI_minus    ADX(14) and directional indicators
+#   Supertrend       Supertrend value (10, 3.0)
+#   Supertrend_dir   1 = bullish, -1 = bearish
+#   Stoch_K / Stoch_D    Stochastic %K and %D (14, 3, 3)
+#   CCI              Commodity Channel Index (20)
+#   MFI              Money Flow Index (14)
+#   CMF              Chaikin Money Flow (20)
+#   BB_upper/middle/lower    Bollinger Bands (20, 2)
+#   BB_percent_B     Bollinger %B  =  (price − lower) / (upper − lower)
+#   volume_ratio     today's vol / 10-day avg vol  (the bot's microstructure metric)
+#   volume_surge_ratio  most-recent-bar vol / rolling-bar avg
+#   pivot/R1/R2/S1/S2   classic floor pivots from PDH/PDL/PDC
+#
+reading_time_ist,timeframe,indicator,expected_value,bot_value,delta,source,notes
+,now,price,,,,,
+,now,day_open,,,,,
+,now,VWAP,,,,,
+,1d,PDH,,,,,
+,1d,PDL,,,,,
+,1d,PDC,,,,,
+,1d,pivot,,,,,
+,1d,R1,,,,,
+,1d,R2,,,,,
+,1d,S1,,,,,
+,1d,S2,,,,,
+,5m,bar_open,,,,,
+,5m,bar_high,,,,,
+,5m,bar_low,,,,,
+,5m,bar_close,,,,,
+,5m,bar_volume,,,,,
+,5m,RSI,,,,,
+,5m,MACD,,,,,
+,5m,MACD_signal,,,,,
+,5m,MACD_hist,,,,,
+,5m,ATR,,,,,
+,5m,ADX,,,,,
+,5m,DI_plus,,,,,
+,5m,DI_minus,,,,,
+,5m,Supertrend,,,,,
+,5m,Supertrend_dir,,,,,
+,5m,Stoch_K,,,,,
+,5m,Stoch_D,,,,,
+,5m,CCI,,,,,
+,5m,MFI,,,,,
+,5m,CMF,,,,,
+,5m,BB_upper,,,,,
+,5m,BB_middle,,,,,
+,5m,BB_lower,,,,,
+,5m,BB_percent_B,,,,,
+,5m,volume_ratio,,,,,
+,5m,volume_surge_ratio,,,,,
+,15m,bar_close,,,,,
+,15m,RSI,,,,,
+,15m,MACD_hist,,,,,
+,15m,ATR,,,,,
+,15m,ADX,,,,,
+,15m,DI_plus,,,,,
+,15m,DI_minus,,,,,
+,60m,bar_close,,,,,
+,60m,RSI,,,,,
+,60m,MACD_hist,,,,,
+,60m,ATR,,,,,
+,60m,ADX,,,,,
+,60m,DI_plus,,,,,
+,60m,DI_minus,,,,,

@@ -1,0 +1,28 @@
+﻿=== signal_indicators schema ===
+  (0, 'paper_trade_id', 'INTEGER', 1, None, 1)
+  (1, 'indicator', 'TEXT', 1, None, 2)
+  (2, 'value', 'REAL', 1, None, 0)
+  (3, 'timeframe', 'TEXT', 1, None, 3)
+
+=== signal_indicators row count today ===
+python.exe : Traceback (most recent call last):
+At line:1 char:32
++ ... NG="utf-8"; & 
+"C:\Users\jayra\Desktop\stock_alert_bot\venv\Scripts\py ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call l 
+   ast)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File 
+"C:\Users\jayra\Desktop\stock_alert_bot\scripts\diagnose_snapshot.py", 
+line 22, in <module>
+    cur.execute(
+    ~~~~~~~~~~~^
+        "SELECT COUNT(*) FROM signal_indicators "
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        "WHERE date(ts) = date('now', 'localtime')"
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+sqlite3.OperationalError: no such column: ts

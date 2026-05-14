@@ -1,0 +1,189 @@
+﻿python.exe : seed_from_yfinance(ALKYLAMINE.NS) failed: 'Pandas' object has 
+no attribute 'open'
+At line:1 char:32
++ ... NG="utf-8"; & 
+"C:\Users\jayra\Desktop\stock_alert_bot\venv\Scripts\py ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (seed_from_yfina...ttribute 'o 
+   pen':String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+NSE option_chain still empty after retries; giving up
+rsi_5m: KeyError: 'close'
+atr_5m: KeyError: 'high'
+adx_5m: KeyError: 'high'
+macd_5m: KeyError: 'close'
+stochastic_5m: KeyError: 'high'
+mfi_5m: KeyError: 'high'
+cci_5m: KeyError: 'high'
+supertrend_5m: KeyError: 'high'
+bollinger_5m: KeyError: 'close'
+cmf_5m: KeyError: 'high'
+volume_surge_ratio_5m: KeyError: 'volume'
+ttm_squeeze_5m: KeyError: 'close'
+opening_range: KeyError: 'high'
+Refreshing daily cache...
+Fetching intraday for ['BHARTIARTL.NS', 'BSE.NS', 'CIPLA.NS', 'MCX.NS', 'ADANIPOWER.NS', 'HFCL.NS', 'GODREJIND.NS', 'ALKYLAMINE.NS']
+
+Market context: nifty=0.2% bn=-0.11% vix=19.0 fii=-4703.15
+Alert threshold: 60.0
+
+==============================================================================================================
+
+BHARTIARTL.NS  price=1829.10  side=LONG
+  components:
+    trend         55.00
+    momentum      65.50
+    volume        26.12
+    volatility    61.53
+    structure     66.50
+    market        42.94
+    news          50.00
+  base score (pre-multipliers): 52.51
+  soft adjustments: []
+  multiplier product: 1.0000
+  FINAL SCORE: 52.51 (threshold 60) (below gate)
+
+BSE.NS  price=4010.10  side=LONG
+  components:
+    trend         80.00
+    momentum      65.50
+    volume        50.67
+    volatility    67.46
+    structure     47.50
+    market        42.94
+    news          50.00
+  base score (pre-multipliers): 61.14
+  soft adjustments: []
+  multiplier product: 1.0000
+  FINAL SCORE: 61.14 (threshold 60) >>> WOULD ALERT <<<
+
+CIPLA.NS  price=1414.80  side=LONG
+  components:
+    trend         76.58
+    momentum      41.00
+    volume        77.18
+    volatility    77.12
+    structure     52.50
+    market        42.94
+    news          50.00
+  base score (pre-multipliers): 60.83
+  soft adjustments: [('already_extended', 0.8)]
+  multiplier product: 0.8000
+  FINAL SCORE: 48.66 (threshold 60) (below gate)
+
+MCX.NS  price=3291.80  side=LONG
+  components:
+    trend         74.22
+    momentum      65.50
+    volume        45.64
+    volatility    73.38
+    structure     61.50
+    market        42.94
+    news          50.00
+  base score (pre-multipliers): 60.93
+  soft adjustments: []
+  multiplier product: 1.0000
+  FINAL SCORE: 60.93 (threshold 60) >>> WOULD ALERT <<<
+
+ADANIPOWER.NS  price=219.26  side=LONG
+  components:
+    trend         49.15
+    momentum      30.50
+    volume        25.00
+    volatility    61.57
+    structure     54.50
+    market        42.94
+    news          50.00
+  base score (pre-multipliers): 42.68
+  soft adjustments: [('low_volume', 0.85)]
+  multiplier product: 0.8500
+  FINAL SCORE: 36.28 (threshold 60) (below gate)
+
+HFCL.NS  price=143.97  side=LONG
+  components:
+    trend         15.00
+    momentum      17.00
+    volume         0.22
+    volatility    55.50
+    structure     47.50
+    market        42.94
+    news          50.00
+  base score (pre-multipliers): 26.42
+  soft adjustments: [('adx_counter_trend', 0.4), ('low_volume', 0.85), ('asm_stage_1', 0.9)]
+  multiplier product: 0.3060
+  FINAL SCORE: 8.09 (threshold 60) (below gate)
+
+GODREJIND.NS  price=1219.60  side=LONG
+  components:
+    trend         98.82
+    momentum      73.00
+    volume        89.78
+    volatility    86.00
+    structure     47.50
+    market        42.94
+    news          50.00
+  base score (pre-multipliers): 75.06
+  soft adjustments: [('already_extended', 0.8), ('asm_stage_1', 0.9)]
+  multiplier product: 0.7200
+  FINAL SCORE: 54.05 (threshold 60) (below gate)
+Traceback (most recent call last):
+  File "C:\Users\jayra\Desktop\stock_alert_bot\venv\Lib\site-packages\panda
+s\core\indexes\base.py", line 3641, in get_loc
+    return self._engine.get_loc(casted_key)
+           ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "pandas/_libs/index.pyx", line 168, in 
+pandas._libs.index.IndexEngine.get_loc
+  File "pandas/_libs/index.pyx", line 197, in 
+pandas._libs.index.IndexEngine.get_loc
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7668, in 
+pandas._libs.hashtable.PyObjectHashTable.get_item
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7676, in 
+pandas._libs.hashtable.PyObjectHashTable.get_item
+KeyError: 'Close'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\jayra\Desktop\stock_alert_bot\scripts\verify_fix.py", 
+line 119, in <module>
+    asyncio.run(main())
+    ~~~~~~~~~~~^^^^^^^^
+  File "C:\Python314\Lib\asyncio\runners.py", line 204, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Python314\Lib\asyncio\runners.py", line 127, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Python314\Lib\asyncio\base_events.py", line 719, in 
+run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\jayra\Desktop\stock_alert_bot\scripts\verify_fix.py", 
+line 81, in main
+    signals = score_stock(sym, intraday, daily, snapshot=snapshot)
+  File "C:\Users\jayra\Desktop\stock_alert_bot\bot\scoring.py", line 92, 
+in score_stock
+    price = float(intraday["Close"].iloc[-1])
+                  ~~~~~~~~^^^^^^^^^
+  File "C:\Users\jayra\Desktop\stock_alert_bot\venv\Lib\site-packages\panda
+s\core\frame.py", line 4377, in __getitem__
+    return self._getitem_multilevel(key)
+           ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "C:\Users\jayra\Desktop\stock_alert_bot\venv\Lib\site-packages\panda
+s\core\frame.py", line 4435, in _getitem_multilevel
+    loc = self.columns.get_loc(key)
+  File "C:\Users\jayra\Desktop\stock_alert_bot\venv\Lib\site-packages\panda
+s\core\indexes\multi.py", line 3523, in get_loc
+    loc = self._get_level_indexer(key, level=0)
+  File "C:\Users\jayra\Desktop\stock_alert_bot\venv\Lib\site-packages\panda
+s\core\indexes\multi.py", line 3885, in _get_level_indexer
+    idx = self._get_loc_single_level_index(level_index, key)
+  File "C:\Users\jayra\Desktop\stock_alert_bot\venv\Lib\site-packages\panda
+s\core\indexes\multi.py", line 3458, in _get_loc_single_level_index
+    return level_index.get_loc(key)
+           ~~~~~~~~~~~~~~~~~~~^^^^^
+  File "C:\Users\jayra\Desktop\stock_alert_bot\venv\Lib\site-packages\panda
+s\core\indexes\base.py", line 3648, in get_loc
+    raise KeyError(key) from err
+KeyError: 'Close'

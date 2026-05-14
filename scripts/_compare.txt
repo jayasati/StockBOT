@@ -1,0 +1,158 @@
+﻿Refreshing daily cache for BHARTIARTL.NS …
+Pulling TradingView data for BHARTIARTL …
+  TV 5m: 94 indicators close=1872.3
+  TV 15m: 94 indicators close=1872.3
+  TV 60m: 94 indicators close=1872.3
+Building bot snapshot for BHARTIARTL.NS …
+
+=== BHARTIARTL  comparison @ 2026-05-14 13:12:38.880001 ===
+
+  TF  Indicator                    TV         Bot    Δ (TV−Bot)       Δ%  Status
+----------------------------------------------------------------------------------------
+  5m  price                  1,872.30    1,875.80     -3.5000   -0.19%  DIVERGE
+  5m  VWAP                        —    1,841.50         —         —  (missing one side)
+  5m  RSI                     75.2002     82.0176     -6.8173   -9.07%  DIVERGE
+  5m  MACD                     9.4844      9.9388     -0.4544   -4.79%  DIVERGE
+  5m  MACD_signal              7.7394      8.5989     -0.8595  -11.11%  DIVERGE
+  5m  MACD_hist                1.7450      1.3399      0.4051   23.22%  DIVERGE
+  5m  ADX                     51.6179     52.9601     -1.3421   -2.60%  DIVERGE
+  5m  DI_plus                 52.2225     56.8672     -4.6447   -8.89%  DIVERGE
+  5m  DI_minus                 7.7964      8.5924     -0.7960  -10.21%  OK
+  5m  Stoch_K                 95.0695     99.3994     -4.3299   -4.55%  DIVERGE
+  5m  Stoch_D                 97.4271     98.5814     -1.1543   -1.18%  DIVERGE
+  5m  CCI                    199.3306    148.1397     51.1909   25.68%  DIVERGE
+  5m  MFI                         —     88.5306         —         —  (missing one side)
+  5m  BB_upper               1,871.65    1,868.67      2.9809    0.16%  DIVERGE
+  5m  BB_middle              1,852.30    1,851.51      0.7850    0.04%  DIVERGE
+  5m  BB_lower               1,832.95    1,834.36     -1.4109   -0.08%  DIVERGE
+  5m  BB_percent_B             1.0168      1.2078     -0.1910  -18.79%  DIVERGE
+  5m  ATR                         —      4.9024         —         —  (missing one side)
+  5m  CMF                         —      0.2363         —         —  (missing one side)
+  5m  Supertrend                  —    1,857.77         —         —  (missing one side)
+  5m  Supertrend_dir              —      1.0000         —         —  (missing one side)
+  5m  volume_ratio                —      1.4495         —         —  (missing one side)
+  5m  volume_surge_ratio          —      2.0763         —         —  (missing one side)
+  5m  pivot                  1,773.23    1,775.90     -2.6667   -0.15%  DIVERGE
+  5m  R1                     1,805.97    1,811.30     -5.3333   -0.30%  DIVERGE
+  5m  R2                     1,830.73    1,833.40     -2.6667   -0.15%  DIVERGE
+  5m  S1                     1,748.47    1,753.80     -5.3333   -0.31%  DIVERGE
+  5m  S2                     1,715.73    1,718.40     -2.6667   -0.16%  DIVERGE
+  5m  PDH                         —    1,798.00         —         —  (missing one side)
+  5m  PDL                         —    1,740.50         —         —  (missing one side)
+  5m  PDC                         —    1,789.20         —         —  (missing one side)
+  5m  bar_open               1,875.80         —         —         —  (missing one side)
+  5m  bar_high               1,876.90         —         —         —  (missing one side)
+  5m  bar_low                1,870.10         —         —         —  (missing one side)
+  5m  bar_close              1,872.30         —         —         —  (missing one side)
+  5m  bar_volume           231,305.00         —         —         —  (missing one side)
+
+ 15m  price                  1,872.30    1,875.80     -3.5000   -0.19%  DIVERGE
+ 15m  VWAP                        —    1,841.50         —         —  (missing one side)
+ 15m  RSI                     77.8623     82.0503     -4.1880   -5.38%  DIVERGE
+ 15m  MACD                    19.3555      9.3672      9.9883   51.60%  DIVERGE
+ 15m  MACD_signal             16.6154      6.0433     10.5720   63.63%  DIVERGE
+ 15m  MACD_hist                2.7402      3.3239     -0.5838  -21.30%  DIVERGE
+ 15m  ADX                     49.5410     66.6263    -17.0854  -34.49%  DIVERGE
+ 15m  DI_plus                 48.8748     37.9394     10.9355   22.37%  DIVERGE
+ 15m  DI_minus                 8.5287      6.1453      2.3834   27.95%  DIVERGE
+ 15m  Stoch_K                 93.9325         —         —         —  (missing one side)
+ 15m  Stoch_D                 90.5678         —         —         —  (missing one side)
+ 15m  CCI                    143.7735         —         —         —  (missing one side)
+ 15m  BB_upper               1,878.44         —         —         —  (missing one side)
+ 15m  BB_middle              1,828.48         —         —         —  (missing one side)
+ 15m  BB_lower               1,778.51         —         —         —  (missing one side)
+ 15m  BB_percent_B             0.9386         —         —         —  (missing one side)
+ 15m  ATR                         —      8.9176         —         —  (missing one side)
+ 15m  CMF                         —      0.3546         —         —  (missing one side)
+ 15m  Supertrend                  —    1,837.24         —         —  (missing one side)
+ 15m  Supertrend_dir              —      1.0000         —         —  (missing one side)
+ 15m  volume_ratio                —      1.4495         —         —  (missing one side)
+ 15m  volume_surge_ratio          —      1.9924         —         —  (missing one side)
+ 15m  pivot                  1,773.23    1,775.90     -2.6667   -0.15%  DIVERGE
+ 15m  R1                     1,805.97    1,811.30     -5.3333   -0.30%  DIVERGE
+ 15m  R2                     1,830.73    1,833.40     -2.6667   -0.15%  DIVERGE
+ 15m  S1                     1,748.47    1,753.80     -5.3333   -0.31%  DIVERGE
+ 15m  S2                     1,715.73    1,718.40     -2.6667   -0.16%  DIVERGE
+ 15m  PDH                         —    1,798.00         —         —  (missing one side)
+ 15m  PDL                         —    1,740.50         —         —  (missing one side)
+ 15m  PDC                         —    1,789.20         —         —  (missing one side)
+ 15m  bar_open               1,862.80         —         —         —  (missing one side)
+ 15m  bar_high               1,876.90         —         —         —  (missing one side)
+ 15m  bar_low                1,862.10         —         —         —  (missing one side)
+ 15m  bar_close              1,872.30         —         —         —  (missing one side)
+ 15m  bar_volume           843,642.00         —         —         —  (missing one side)
+
+ 60m  price                  1,872.30    1,875.80     -3.5000   -0.19%  DIVERGE
+ 60m  VWAP                        —    1,841.50         —         —  (missing one side)
+ 60m  RSI                     75.0940         —         —         —  (missing one side)
+ 60m  MACD                    10.6529         —         —         —  (missing one side)
+ 60m  MACD_signal             -1.4933         —         —         —  (missing one side)
+ 60m  MACD_hist               12.1461         —         —         —  (missing one side)
+ 60m  ADX                     29.0112         —         —         —  (missing one side)
+ 60m  DI_plus                 42.5810         —         —         —  (missing one side)
+ 60m  DI_minus                11.4150         —         —         —  (missing one side)
+ 60m  Stoch_K                 94.0251         —         —         —  (missing one side)
+ 60m  Stoch_D                 89.9759         —         —         —  (missing one side)
+ 60m  CCI                    239.9644         —         —         —  (missing one side)
+ 60m  BB_upper               1,849.40         —         —         —  (missing one side)
+ 60m  BB_middle              1,787.13         —         —         —  (missing one side)
+ 60m  BB_lower               1,724.86         —         —         —  (missing one side)
+ 60m  BB_percent_B             1.1838         —         —         —  (missing one side)
+ 60m  CMF                         —      0.4248         —         —  (missing one side)
+ 60m  Supertrend                  —    1,884.61         —         —  (missing one side)
+ 60m  Supertrend_dir              —     -1.0000         —         —  (missing one side)
+ 60m  volume_ratio                —      1.4495         —         —  (missing one side)
+ 60m  volume_surge_ratio          —      1.9924         —         —  (missing one side)
+ 60m  pivot                  1,843.67    1,775.90     67.7667    3.68%  DIVERGE
+ 60m  R1                     1,886.33    1,811.30     75.0334    3.98%  DIVERGE
+ 60m  R2                     1,937.97    1,833.40    104.5667    5.40%  DIVERGE
+ 60m  S1                     1,792.03    1,753.80     38.2334    2.13%  DIVERGE
+ 60m  S2                     1,749.37    1,718.40     30.9667    1.77%  DIVERGE
+ 60m  PDH                         —    1,798.00         —         —  (missing one side)
+ 60m  PDL                         —    1,740.50         —         —  (missing one side)
+ 60m  PDC                         —    1,789.20         —         —  (missing one side)
+ 60m  bar_open               1,849.10         —         —         —  (missing one side)
+ 60m  bar_high               1,876.90         —         —         —  (missing one side)
+ 60m  bar_low                1,845.40         —         —         —  (missing one side)
+ 60m  bar_close              1,872.30         —         —         —  (missing one side)
+ 60m  bar_volume           2,247,085.00         —         —         —  (missing one side)
+
+38 indicators DIVERGE beyond tolerance:
+  5m price                 TV=  1,872.30  Bot=  1,875.80  Δ=   -3.5000  (-0.19%)
+  5m RSI                   TV=   75.2002  Bot=   82.0176  Δ=   -6.8173  (-9.07%)
+  5m MACD                  TV=    9.4844  Bot=    9.9388  Δ=   -0.4544  (-4.79%)
+  5m MACD_signal           TV=    7.7394  Bot=    8.5989  Δ=   -0.8595  (-11.11%)
+  5m MACD_hist             TV=    1.7450  Bot=    1.3399  Δ=    0.4051  (+23.22%)
+  5m ADX                   TV=   51.6179  Bot=   52.9601  Δ=   -1.3421  (-2.60%)
+  5m DI_plus               TV=   52.2225  Bot=   56.8672  Δ=   -4.6447  (-8.89%)
+  5m Stoch_K               TV=   95.0695  Bot=   99.3994  Δ=   -4.3299  (-4.55%)
+  5m Stoch_D               TV=   97.4271  Bot=   98.5814  Δ=   -1.1543  (-1.18%)
+  5m CCI                   TV=  199.3306  Bot=  148.1397  Δ=   51.1909  (+25.68%)
+  5m BB_upper              TV=  1,871.65  Bot=  1,868.67  Δ=    2.9809  (+0.16%)
+  5m BB_middle             TV=  1,852.30  Bot=  1,851.51  Δ=    0.7850  (+0.04%)
+  5m BB_lower              TV=  1,832.95  Bot=  1,834.36  Δ=   -1.4109  (-0.08%)
+  5m BB_percent_B          TV=    1.0168  Bot=    1.2078  Δ=   -0.1910  (-18.79%)
+  5m pivot                 TV=  1,773.23  Bot=  1,775.90  Δ=   -2.6667  (-0.15%)
+  5m R1                    TV=  1,805.97  Bot=  1,811.30  Δ=   -5.3333  (-0.30%)
+  5m R2                    TV=  1,830.73  Bot=  1,833.40  Δ=   -2.6667  (-0.15%)
+  5m S1                    TV=  1,748.47  Bot=  1,753.80  Δ=   -5.3333  (-0.31%)
+  5m S2                    TV=  1,715.73  Bot=  1,718.40  Δ=   -2.6667  (-0.16%)
+  15m price                 TV=  1,872.30  Bot=  1,875.80  Δ=   -3.5000  (-0.19%)
+  15m RSI                   TV=   77.8623  Bot=   82.0503  Δ=   -4.1880  (-5.38%)
+  15m MACD                  TV=   19.3555  Bot=    9.3672  Δ=    9.9883  (+51.60%)
+  15m MACD_signal           TV=   16.6154  Bot=    6.0433  Δ=   10.5720  (+63.63%)
+  15m MACD_hist             TV=    2.7402  Bot=    3.3239  Δ=   -0.5838  (-21.30%)
+  15m ADX                   TV=   49.5410  Bot=   66.6263  Δ=  -17.0854  (-34.49%)
+  15m DI_plus               TV=   48.8748  Bot=   37.9394  Δ=   10.9355  (+22.37%)
+  15m DI_minus              TV=    8.5287  Bot=    6.1453  Δ=    2.3834  (+27.95%)
+  15m pivot                 TV=  1,773.23  Bot=  1,775.90  Δ=   -2.6667  (-0.15%)
+  15m R1                    TV=  1,805.97  Bot=  1,811.30  Δ=   -5.3333  (-0.30%)
+  15m R2                    TV=  1,830.73  Bot=  1,833.40  Δ=   -2.6667  (-0.15%)
+  15m S1                    TV=  1,748.47  Bot=  1,753.80  Δ=   -5.3333  (-0.31%)
+  15m S2                    TV=  1,715.73  Bot=  1,718.40  Δ=   -2.6667  (-0.16%)
+  60m price                 TV=  1,872.30  Bot=  1,875.80  Δ=   -3.5000  (-0.19%)
+  60m pivot                 TV=  1,843.67  Bot=  1,775.90  Δ=   67.7667  (+3.68%)
+  60m R1                    TV=  1,886.33  Bot=  1,811.30  Δ=   75.0334  (+3.98%)
+  60m R2                    TV=  1,937.97  Bot=  1,833.40  Δ=  104.5667  (+5.40%)
+  60m S1                    TV=  1,792.03  Bot=  1,753.80  Δ=   38.2334  (+2.13%)
+  60m S2                    TV=  1,749.37  Bot=  1,718.40  Δ=   30.9667  (+1.77%)
