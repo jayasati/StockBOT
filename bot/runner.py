@@ -20,7 +20,7 @@ import logging
 from datetime import datetime, timedelta
 
 import fyers_client
-from data import filings, precompute, realtime_feed
+from data import backfill, filings, precompute, realtime_feed
 from data.fast_mover import FastMove, FastMover, format_fast_move
 from data.trading_calendar import is_trading_day
 from news import scorer as news_scorer
@@ -183,6 +183,20 @@ async def _fast_move_consumer(
 async def main() -> None:
     init_db()
     market_data.ensure_live_feed()
+    fy_symbols = [fyers_client.to_fyers(s) for s in WATCHLIST]
+    # Catch up today's 5m bars if we started mid-session. Idempotent
+    # via INSERT OR IGNORE — safe on pre-market starts (no-op) and
+    # restarts (only fetches the gap). Runs BEFORE the scan loop so
+    # the first scan sees a contiguous indicator series.
+    try:
+        filled = await backfill.backfill_today(fy_symbols)
+        if filled:
+            log.info(
+                "Startup backfill: filled %d symbols, %d bars total",
+                len(filled), sum(filled.values()),
+            )
+    except Exception:
+        log.exception("Startup backfill failed; continuing with cold-start fallback")
     await market_data.refresh_asm_gsm_if_stale()
     telegram = Telegram(settings.telegram_bot_token, settings.telegram_chat_id)
 
@@ -196,9 +210,9 @@ async def main() -> None:
 
     log.info("Bot started. Watchlist: %d symbols", len(WATCHLIST))
 
-    # The health monitor needs Fyers-encoded symbols (NSE:X-EQ) to query
-    # bars_5m, which is keyed on the Fyers form.
-    fy_symbols = [fyers_client.to_fyers(s) for s in WATCHLIST]
+    # Reuse the Fyers-encoded watchlist computed at the top of main()
+    # for the health monitor (it queries bars_5m, which is keyed on the
+    # Fyers form NSE:X-EQ).
     monitor = MonitorLoop(
         send_alert=telegram.send,
         watchlist=fy_symbols,

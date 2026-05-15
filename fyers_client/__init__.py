@@ -22,6 +22,7 @@ from .bars import (
     TickStore,
 )
 from .creds import FyersCreds, load_creds
+from .history import FyersHistoryError, fetch_history
 from .livefeed import LiveFeed
 from .record import record_ticks
 from .symbols import to_fyers, to_yf
@@ -32,6 +33,7 @@ __all__ = [
     "BAR_INTERVAL_SECONDS",
     "Bar",
     "FyersCreds",
+    "FyersHistoryError",
     "LiveFeed",
     "MAX_BARS_PER_SYMBOL",
     "TICK_STORE",
@@ -39,6 +41,7 @@ __all__ = [
     "TickHandler",
     "TickStore",
     "authenticate",
+    "fetch_history",
     "load_creds",
     "record_ticks",
     "start_data_socket",

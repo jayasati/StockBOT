@@ -5,7 +5,8 @@ Consumers (bot.py, dashboard, paper tracker) call:
     subscribe(symbols)                     — once at startup, opens the LiveFeed
     get_5m_bars(symbol, n=100) -> DataFrame — last n completed 5-min OHLCV bars
     get_current_partial(symbol) -> Bar     — the in-progress bar
-    seed_from_yfinance(symbol, df_5m)      — backfill the SQLite cache from yfinance
+    seed_bars(symbol, df)                  — backfill the SQLite cache from any
+                                             OHLCV source (yfinance, Fyers history)
 
 Bars are aggregated by ``BarAggregator`` from the raw Fyers tick stream.
 Slots are aligned to the NSE cash-equity session (09:15–15:30 IST). The first
@@ -433,17 +434,22 @@ class BarAggregator:
 
     # -- Backfill --------------------------------------------------------
 
-    def seed_from_yfinance(self, symbol: str, df_5m: pd.DataFrame) -> int:
-        """Insert yfinance 5-min bars into bars_5m. Idempotent on (symbol, ts).
+    def seed_bars(self, symbol: str, df: pd.DataFrame) -> int:
+        """Insert backfilled OHLCV bars into ``bars_5m`` / ``bars_1m``.
+        Idempotent on (symbol, ts).
 
-        yfinance gives tz-aware UTC timestamps with capitalised columns; we
-        normalise to IST + lowercase before persisting, and store ``ts`` as
-        UTC epoch milliseconds. Bars outside the 09:15–15:30 IST window are
-        dropped.
+        Source-agnostic: accepts either the yfinance shape (capitalised
+        ``Open/High/Low/Close/Volume``) or the lowercase shape Fyers
+        history and the live aggregator use. The index must be a
+        ``DatetimeIndex``; naive indexes are assumed to be IST.
+
+        Bars outside the 09:15–15:30 IST session window are dropped so the
+        on-disk store keeps the same invariant the live aggregator
+        enforces — :mod:`features` depends on it.
         """
-        if df_5m is None or df_5m.empty:
+        if df is None or df.empty:
             return 0
-        df = df_5m.rename(columns={
+        df = df.rename(columns={
             "Open": "open", "High": "high", "Low": "low",
             "Close": "close", "Volume": "volume",
         })
@@ -474,6 +480,9 @@ class BarAggregator:
                 rows,
             )
         return len(rows)
+
+    # Back-compat alias — every existing caller passed yfinance frames.
+    seed_from_yfinance = seed_bars
 
 
 # ---------------------------------------------------------------------------
@@ -620,8 +629,12 @@ def get_completed_bars_since(
     return get_aggregator().get_completed_bars_since(symbol, since_ts)
 
 
-def seed_from_yfinance(symbol: str, df_5m: pd.DataFrame) -> int:
-    return get_aggregator().seed_from_yfinance(symbol, df_5m)
+def seed_bars(symbol: str, df: pd.DataFrame) -> int:
+    return get_aggregator().seed_bars(symbol, df)
+
+
+# Back-compat: yfinance was the original (and only) backfill source.
+seed_from_yfinance = seed_bars
 
 
 def stats() -> dict:
